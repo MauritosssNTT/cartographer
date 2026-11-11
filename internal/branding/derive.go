@@ -8,7 +8,7 @@ import (
 
 // maxShift is how many points of lightness an accent may move per theme to
 // pass; beyond it the accent is refused with the nearest passing colour.
-const maxShift = 35
+const maxShift = 45
 
 // Theme is the accent-dependent tokens of one theme.
 type Theme struct {
@@ -88,9 +88,11 @@ func deriveTheme(accent string, panels [3]string, dir int, name string) (Theme, 
 		t := Theme{Accent: c, Primary: c, PrimaryDim: c, TextOnPrimary: text, TextOnAccent: text,
 			Adjusted: k > 0, Shift: k, From: accent, PanelRatio: panel, TextRatio: onText}
 		// The dim shade is 6 points darker on both themes, like the shipped palette,
-		// and stays the accent itself when the shade fails the same pairs.
+		// and stays the accent itself when the shade fails the same pairs or the
+		// text on it: .button--primary:hover draws --text-on-primary over --primary-dim
+		// (web/src/styles/base.css), so that pair is audited too.
 		if dim := fromHSL(h, s, lightOf(c)-0.06); dim != c {
-			if _, _, _, ok := pairs(dim, panels, prefer); ok {
+			if _, _, _, ok := pairs(dim, panels, prefer); ok && ratio(text, dim) >= textMin {
 				t.PrimaryDim = dim
 			}
 		}

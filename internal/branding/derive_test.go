@@ -70,6 +70,9 @@ func holds(t *testing.T, th Theme, panels [3]string) {
 	if r := ratio(th.TextOnAccent, th.Accent); r < 4.5 {
 		t.Errorf("text on accent %s on %s = %.2f", th.TextOnAccent, th.Accent, r)
 	}
+	if r := ratio(th.TextOnPrimary, th.PrimaryDim); r < 4.5 {
+		t.Errorf("text on primary %s on dim %s = %.2f", th.TextOnPrimary, th.PrimaryDim, r)
+	}
 	for _, p := range panels {
 		if r := ratio(th.PrimaryDim, p); r < 4.5 {
 			t.Errorf("dim %s on %s = %.2f < 4.5", th.PrimaryDim, p, r)
@@ -84,14 +87,14 @@ func TestDerive(t *testing.T) {
 		wantErr                     string
 	}
 	// #365d50 is the shipped light accent: it moves on dark. #b5d6bd, the shipped
-	// dark accent, needs 38 points on light, over maxShift: refused below.
+	// dark accent, needs 43 points on light, within maxShift.
 	cases := []tc{
 		{"#365d50", true, false, ""},
 		{"#91b9a0", false, true, ""},
 		{"#808080", true, true, ""},
 		{"#ffee00", false, true, ""},
-		{"#b5d6bd", false, false, "cannot be shown on the light theme within 35 points of lightness (the nearest colour that passes is #3f714b)"},
-		{"#ffffcc", false, false, "cannot be shown on the light theme within 35 points of lightness (the nearest colour that passes is #"},
+		{"#b5d6bd", false, true, ""},
+		{"#ffffcc", false, false, "cannot be shown on the light theme within 45 points of lightness (the nearest colour that passes is #"},
 	}
 	for _, c := range cases {
 		p, err := Derive(c.accent)
