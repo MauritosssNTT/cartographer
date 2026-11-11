@@ -267,10 +267,10 @@ The atlas side has one family, `branding` (`components.atlas.sdk.branding: 1`): 
 **one accent colour**, all data. The word "Cartographer" is code and no key renames or removes it; `company` is only the logo's alt text.
 The server derives the tokens from the accent, the plugin never ships CSS: for each theme `branding.Derive` keeps the hue and
 saturation and moves the lightness (darker on light, lighter on dark) one point at a time until the accent holds the pairs
-`web/src/test/contrast.test.ts` audits: 4.5:1 on the three panel surfaces, 3:1 on surface-0, and 4.5:1 for the text colour on
-the accent. A shift of more than 35 points, or an accent that cannot pass, is refused with the nearest colour that does
-(`accent #ffffcc: cannot be shown on the light theme within 35 points of lightness (the nearest colour that passes is #...); pick a darker colour`).
-A pale accent such as the shipped dark one (`#b5d6bd`) is refused for that reason: choose a mid-tone. The derived tokens are `--primary`, `--primary-dim`, `--accent`,
+`web/src/test/contrast.test.ts` audits: 4.5:1 on the three panel surfaces, 3:1 on surface-0, 4.5:1 for the text colour on
+the accent, and for that text on the hover shade `--primary-dim`. A shift of more than 45 points, or an accent that cannot pass, is refused with the nearest colour that does
+(`accent #ffffcc: cannot be shown on the light theme within 45 points of lightness (the nearest colour that passes is #...); pick a darker colour`).
+A pale accent such as the shipped dark one (`#b5d6bd`) is darkened on the light theme; a near-white one is refused: choose a mid-tone. The derived tokens are `--primary`, `--primary-dim`, `--accent`,
 `--text-on-primary`, `--text-on-accent`, `--graph-edge-active` and, on the light theme, `--graph-edge-3d-active`, `--graph-ring`
 and `--graph-glow-a`; `Palette.CSS()` renders them as a deterministic stylesheet. `internal/branding/contrast.go` ports the
 contrast formula and `derive_test.go` fails when its surface constants drift from `web/src/styles/tokens.css`.
