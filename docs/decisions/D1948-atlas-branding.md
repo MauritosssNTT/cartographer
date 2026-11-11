@@ -23,14 +23,13 @@ so the error is also the recommendation.
 **Alternatives rejected.** An operator-written stylesheet (it could restyle anything and carry `url()` requests). A name
 override (the product name is code). Refusing every accent that fails on either theme (it would refuse most brand
 colours). Adjusting without a bound (a pale yellow would become an olive nobody chose). Several active brandings with a
-precedence by pin order (the logo would depend on a map's iteration). `LoadPinned` with one side plus a second call for
-the atlas (a branding-only plugin would always fail one of the two).
+precedence by pin order (the logo would depend on a map's iteration). A new server-side branding loader apart from the
+atlas side's pins (the server already opens each pin once per side).
 
 **Consequences.** A branding folder that parses is a `branding.Spec`; nothing loads it until the plugin glue lands. A
 change to the surfaces in `tokens.css` fails `internal/branding`'s drift guard until the Go constants follow. The Go
 contrast port and the TypeScript one are kept in step by a comment on each. A plugin's branding is
-loaded by the server from the same `plugins` pins as its server side: `core.LoadPinned` takes the sides a component
-loads and `core.Options.Sides` the sides a tree reads, so a branding-only plugin is a server pin. At most one active
+loaded by the server from the same `plugins` pins as its other sides: a branding-only plugin is an atlas pin. At most one active
 plugin may provide a branding (two is a start error naming both, so no pin order decides the logo) and an accent that
 cannot be shown stops the start naming the plugin and the key. Serving the stylesheet and the assets is the next
 change's decision.
