@@ -26,7 +26,7 @@ colours). Adjusting without a bound (a pale yellow would become an olive nobody 
 precedence by pin order (the logo would depend on a map's iteration). A new server-side branding loader apart from the
 atlas side's pins (the server already opens each pin once per side).
 
-**Consequences.** A branding folder that parses is a `branding.Spec`; nothing loads it until the plugin glue lands. A
+**Consequences.** A branding folder that parses is a `branding.Spec`. A
 change to the surfaces in `tokens.css` fails `internal/branding`'s drift guard until the Go constants follow. The Go
 contrast port and the TypeScript one are kept in step by a comment on each. A plugin's branding is
 loaded by the server from the same `plugins` pins as its other sides: a branding-only plugin is an atlas pin. At most one active

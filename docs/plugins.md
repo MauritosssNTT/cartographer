@@ -534,7 +534,9 @@ of the tree.
 
 A plugin's atlas side (`components.atlas.sdk: {views: 1, apps: 1}`) is **data only: no code ever runs in the Atlas**. Two
 points, loaded by `internal/atlasext` (which imports `internal/plugin/core` and `internal/provisioning/contract`, no data plane); the registered point set of the side
-is exactly `{views, apps}` (`TestAtlasPointSet`). Each file is `views/<name>.yaml` or `apps/<name>.yaml`, `<name>` matching
+that `internal/atlasext` registers is exactly `{views, apps}` (`TestAtlasPointSet`); the binary also registers a third
+atlas point, `branding/`, from `internal/pluginserver` (§Atlas branding), declared as `components.atlas.sdk: {branding: 1}`
+(a plugin may declare `branding`, `views` and `apps` together). Each file is `views/<name>.yaml` or `apps/<name>.yaml`, `<name>` matching
 `^[a-z][a-z0-9-]{0,39}$`, read as strictly as the manifest: an unknown key, a YAML alias, a second document, a file over 8 KiB
 or an executable file is a problem, reported as `path: reason` (`path: key: reason` for a key, including a wrong type), sorted. Two views (or two apps) of one plugin may not share a title.
 
