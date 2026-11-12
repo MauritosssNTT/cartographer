@@ -187,8 +187,10 @@ describe("a release's changelog is rendered as untrusted content (D862)", () => 
     const user = userEvent.setup();
     render(<App />);
     // The version sits at the foot of the left rail.
-    await user.click(await screen.findByRole("button", { name: /Meridian version v1\.2\.3/ }));
-    const sheet = await screen.findByRole("dialog", { name: "Releases" });
+    // A label lookup for the boot (no role query, no computed styles over the
+    // whole app), and the dialog read synchronously once the click has landed.
+    await user.click(await screen.findByLabelText(/Meridian version v1\.2\.3/));
+    const sheet = screen.getByRole("dialog", { name: "Releases" });
     await within(sheet).findByRole("heading", { name: "Features" });
 
     expect(sheet.querySelector("script, img")).toBeNull();
