@@ -213,7 +213,7 @@ func stripShellComment(line string) string {
 
 // pipeIntoQuietGrep returns the 1-based line (the first physical line of the
 // logical one) of every pipeline in src that ends in a quiet grep. A logical
-// line continues over a trailing `\` and over a trailing `|`, so `a |`
+// line continues over a trailing `\` and over a trailing `|` or `|&`, so `a |`
 // followed by `grep -q x` on the next line is one pipeline. allowMarker
 // honours the pipeMarker comment on any physical line of the logical one.
 func pipeIntoQuietGrep(src string, allowMarker bool) []int {
@@ -232,7 +232,8 @@ func pipeIntoQuietGrep(src string, allowMarker bool) []int {
 			switch {
 			case strings.HasSuffix(code, "\\"):
 				code, cont = strings.TrimSuffix(code, "\\"), true
-			case strings.HasSuffix(code, "|") && !strings.HasSuffix(code, "||"):
+			case strings.HasSuffix(code, "|&"),
+				strings.HasSuffix(code, "|") && !strings.HasSuffix(code, "||"):
 				cont = true
 			}
 			logical.WriteString(code)
@@ -272,6 +273,8 @@ func TestPipeIntoQuietGrepShapes(t *testing.T) {
 		"negated":                 `if ! printf '%s' "$h" | grep -q boot; then :; fi`,
 		"stderr merged":           `a 2>&1 | grep -q foo`,
 		"pipe ends the line":      "a |\n  grep -q foo",
+		"stderr pipe ends a line": "a |&\n  grep -q foo",
+		"hash inside a word":      `echo a#b | grep -q foo`,
 		"pipe and backslash":      "a | \\\n  grep -q foo",
 		"backslash before pipe":   "a \\\n  | grep -q foo",
 		"in a subshell":           `( a | grep -q foo )`,
@@ -320,7 +323,6 @@ func TestPipeIntoQuietGrepShapes(t *testing.T) {
 		"xargs of other commands": `a | xargs -n1 echo`,
 		"command -v grep":         `a | command -v grep`,
 		"escaped quote, comment":  `echo "a \" b" # | grep -q foo`,
-		"hash inside a word":      `echo a#b | grep foo`,
 	}
 	for name, src := range fine {
 		if got := pipeIntoQuietGrep(src, false); len(got) != 0 {
