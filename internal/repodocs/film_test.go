@@ -179,6 +179,8 @@ func TestFilmCapGrammar(t *testing.T) {
 		{"three fields", "default 5 6", false},
 		{"no bytes", "default", false},
 		{"sign", "default +5", false},
+		{"NUL after the bytes", "default 5\x00junk", false},
+		{"a line of NUL alone", "default 5\n\x00\n", false},
 	} {
 		if _, bad, ok := parseFilmCaps(c.text); ok != c.ok {
 			t.Errorf("%s: %q accepted=%v, want %v (first refused line %q)", c.name, c.text, ok, c.ok, bad)

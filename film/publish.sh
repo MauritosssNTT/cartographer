@@ -18,7 +18,18 @@ set -euo pipefail
 # shellcheck source=film/inputs.sh
 . "$(dirname "${BASH_SOURCE[0]}")/inputs.sh"
 
+# bash `read` stops a line at a NUL byte, so `launch<NUL>junk` would read as `launch` and a line of NUL alone as blank, where
+# record.mjs, vite.config.ts and internal/repodocs/film_test.go keep or refuse it. A NUL byte in a file read below is refused
+# before its loop; LC_ALL=C because a BSD tr fails on a byte that is not valid UTF-8. wc and tr -d are in macOS and Linux.
+nonul() {
+    local total clean
+    total="$(wc -c < "$1")"
+    clean="$(LC_ALL=C tr -d '\000' < "$1" | wc -c)"
+    [ "$((total))" -eq "$((clean))" ]
+}
+
 # The films, read as film/render.sh reads them (last line without a newline, CRLF, blanks around a name).
+nonul film/films.txt || { echo "publish: film/films.txt holds a NUL byte, which is not in a film name" >&2; exit 1; }
 FILMS=()
 while IFS= read -r name || [ -n "$name" ]; do
     name="${name//$'\r'/}"
@@ -45,6 +56,7 @@ BYTES='[1-9][0-9]{0,14}'
 WS=$' \t'
 BLANKRE="^[${WS}]*(#|$)"
 CAPRE="^[${WS}]*([^${WS}]+)[${WS}]+(${BYTES})[${WS}]*$"
+nonul film/max-bytes.txt || { echo 'publish: film/max-bytes.txt holds a NUL byte, which is not in "<film> <positive number of bytes, at most 15 digits>"' >&2; exit 1; }
 CAPKEYS=()
 CAPVALS=()
 while IFS= read -r line || [ -n "$line" ]; do

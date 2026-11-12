@@ -28,7 +28,9 @@
 #      the cap, before any file is hashed and with nothing pushed; a file exactly
 #      at the cap is published; a bad override or cap file is exit 1, and the
 #      grammar is the one of record.mjs: a no-break space, VT, FF or inner CR as
-#      separator, and a value of 16 digits or past int64, are refused.
+#      separator, a value of 16 digits or past int64, and a NUL byte (which bash
+#      `read` would cut the line at) in film/max-bytes.txt or film/films.txt, are
+#      refused.
 #
 # Expected environment variables: E2E_TMP_DIR, REPO_ROOT.
 
@@ -215,6 +217,16 @@ rmdir film/out
 printf 'launch\r\nplugins' > film/films.txt
 check "films.txt with CRLF and no final newline still names the films" 0 "${PUBLISH[@]}"
 git checkout -q film/films.txt
+# bash `read` would stop at the NUL byte: `launch<NUL>junk` as `launch`, a line of NUL alone as blank. record.mjs and the Go test
+# keep or refuse it, so the list is refused.
+BEFORE="$(git --git-dir="$ORIGIN" rev-parse readme-film)"
+printf 'launch\000junk\nplugins\n' > film/films.txt
+check "films.txt with a NUL inside a name is refused" 1 "${PUBLISH[@]}"
+assert_file_contains "${DIR}/out.txt" "NUL byte"
+printf 'launch\nplugins\n\000\n' > film/films.txt
+check "films.txt with a line of NUL alone is refused" 1 "${PUBLISH[@]}"
+unchanged "a films.txt with a NUL byte"
+git checkout -q film/films.txt
 
 echo ""
 echo "--- Phase 8: a file over its film's cap is refused ---"
@@ -308,6 +320,15 @@ assert_file_contains "${DIR}/out.txt" "launch 1234567890123456"
 printf 'default 3000\nlaunch 9223372036854775808\n' > film/max-bytes.txt
 check "a cap past int64 is refused" 1 film/publish.sh caps/film.webp
 unchanged "a cap file outside the grammar"
+# bash `read` stops a line at a NUL byte: `default 5<NUL>junk` would read as `default 5`, a line of NUL alone as blank;
+# record.mjs and the Go parseFilmCaps refuse both, so publish.sh does too, before it parses a line.
+printf 'default 3000\nlaunch 5000\000junk\n' > film/max-bytes.txt
+check "a cap line with a NUL after its bytes is refused" 1 film/publish.sh caps/film.webp
+assert_file_contains "${DIR}/out.txt" "NUL byte"
+printf 'default 3000\n\000\nlaunch 5000\n' > film/max-bytes.txt
+check "a cap line of NUL alone is refused" 1 film/publish.sh caps/film.webp
+assert_file_contains "${DIR}/out.txt" "NUL byte"
+unchanged "a cap file holding a NUL byte"
 git checkout -q film/max-bytes.txt
 rm -r caps
 

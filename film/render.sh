@@ -14,6 +14,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 ALL=()
+# bash `read` stops a line at a NUL byte, so `launch<NUL>junk` would read as `launch`; record.mjs and film_test.go keep or refuse it,
+# so a NUL byte in the list is refused (LC_ALL=C: a BSD tr fails on a byte that is not valid UTF-8).
+[ "$(($(wc -c < film/films.txt)))" -eq "$(($(LC_ALL=C tr -d '\000' < film/films.txt | wc -c)))" ] || { echo "render: film/films.txt holds a NUL byte, which is not in a film name" >&2; exit 1; }
 # `|| [ -n "$name" ]`: the last line counts without a final newline. A CR (a CRLF file) and the blanks around a name
 # are dropped, as record.mjs and vite.config.ts do with trim(). Blank lines are skipped.
 while IFS= read -r name || [ -n "$name" ]; do
