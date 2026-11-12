@@ -339,7 +339,7 @@ type MultiKBServer struct {
 	surveyors surveyorStore
 	// components is the registry of expected components (components.go).
 	components componentRegistry
-	// atlasURL is where a browser opens the Atlas (SetAtlasURL).
+	// atlasURL is where a browser opens the Atlas (SetAtlasAddr).
 	atlasURL string
 	// extensions are the views, apps and plugins of GET /api/ui/v1/extensions
 	// (uiapi_extensions.go), set once before serving.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/BeppeTemp/cartographer/internal/auth"
 	"github.com/BeppeTemp/cartographer/internal/client"
 	"github.com/BeppeTemp/cartographer/internal/webui"
 )
@@ -38,10 +39,16 @@ type localCallerKey struct{}
 // forwardingHeaders are the request headers a reverse proxy adds. A proxy on
 // the server's own machine connects from loopback, so its remote users look
 // local; any of these says the peer is not the caller.
-var forwardingHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"}
+var forwardingHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Real-IP", "Via"}
 
-// withLocalCaller marks r when its TCP peer is a loopback address and no
-// forwarding header is present.
+// withLocalCaller marks r when its TCP peer is a loopback address, no
+// forwarding header is present and the caller did not come in through a
+// trusted proxy's token.
+//
+// TRAP: it reads the principal from the request context, so it must run inside
+// the authentication middleware (serve wraps MultiKBServer.Handler in it); a
+// principal with Via set is a person a trusted proxy named, proof that the TCP
+// peer is the proxy and not the caller, whatever headers the proxy forwarded.
 func withLocalCaller(r *http.Request) *http.Request {
 	if !isLocalRequest(r) {
 		return r
@@ -50,6 +57,9 @@ func withLocalCaller(r *http.Request) *http.Request {
 }
 
 func isLocalRequest(r *http.Request) bool {
+	if auth.PrincipalFromContext(r.Context()).Via != "" {
+		return false
+	}
 	for _, h := range forwardingHeaders {
 		if len(r.Header.Values(h)) > 0 {
 			return false

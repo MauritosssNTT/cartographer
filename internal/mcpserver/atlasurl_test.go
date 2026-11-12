@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/BeppeTemp/cartographer/internal/auth"
 )
 
 // routedAtlasHandler is newRoutedTestHandler with the Atlas surface set as
@@ -107,6 +109,7 @@ func TestKBStatus_UIURLOnlyForALocalCaller(t *testing.T) {
 	multi.EnableWeb(http.NotFoundHandler())
 	multi.SetAtlasAddr("0.0.0.0:39273")
 	base := routedTokenStore("kb-a").Middleware(multi.Handler())
+	viaBase := routedTokenStore("kb-a").Middleware(markViaPrincipal(multi.Handler()))
 	want := "http://127.0.0.1:39273/ui/?kb=kb-a"
 	cases := []struct {
 		name    string
@@ -123,9 +126,16 @@ func TestKBStatus_UIURLOnlyForALocalCaller(t *testing.T) {
 		{"loopback proxy, Forwarded", "127.0.0.1:50000", []string{"Forwarded", "for=198.51.100.9"}, false},
 		{"loopback proxy, X-Forwarded-Host", "127.0.0.1:50000", []string{"X-Forwarded-Host", "example.com"}, false},
 		{"loopback proxy, X-Real-IP", "127.0.0.1:50000", []string{"X-Real-IP", "198.51.100.9"}, false},
+		{"loopback proxy, X-Forwarded-Proto", "127.0.0.1:50000", []string{"X-Forwarded-Proto", "https"}, false},
+		{"loopback proxy, Via", "127.0.0.1:50000", []string{"Via", "1.1 proxy.example.com"}, false},
+		{"loopback, trusted-proxy principal, no header", "127.0.0.1:50000", nil, false},
 	}
 	for _, c := range cases {
-		obj, _ := routedKBStatusConnection(t, fromPeer(base, c.peer, c.headers...), RoutedMountPath, "kb-a")
+		h := base
+		if strings.Contains(c.name, "trusted-proxy") {
+			h = viaBase
+		}
+		obj, _ := routedKBStatusConnection(t, fromPeer(h, c.peer, c.headers...), RoutedMountPath, "kb-a")
 		if !c.present {
 			raw, _ := json.Marshal(obj)
 			if _, ok := obj["ui_url"]; ok || strings.Contains(string(raw), "39273") {
@@ -137,6 +147,17 @@ func TestKBStatus_UIURLOnlyForALocalCaller(t *testing.T) {
 			t.Errorf("%s: ui_url = %v, want %s", c.name, obj["ui_url"], want)
 		}
 	}
+}
+
+// markViaPrincipal is what a trusted-proxy token does inside the auth
+// middleware (internal/auth/proxy.go): the principal is a person the proxy
+// named, with Via the id of the proxy token.
+func markViaPrincipal(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := auth.PrincipalFromContext(r.Context())
+		p.Via = "proxy-token"
+		next.ServeHTTP(w, r.WithContext(auth.ContextWithPrincipal(r.Context(), p)))
+	})
 }
 
 // Under stdio no HTTP server mounted the KB: no Atlas, no field.
