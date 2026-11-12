@@ -10,7 +10,7 @@ const feedbackOff = (err: ApiError) => err.status === 404 && err.code === "feedb
 /**
  * Candidates live in the server's memory and change without a commit (a
  * Surveyor whose tool calls fail writes nothing), so the list is read again on
- * this timer, whatever the live counter does.
+ * this timer while the tab is visible, whatever the live counter does.
  */
 export const CANDIDATES_REFRESH = { ms: 60_000 };
 
@@ -26,7 +26,10 @@ export function useReportCandidates(kb: string | null, live: number): ReportCand
   const [tick, setTick] = useState(0);
   useEffect(() => {
     if (!kb) return;
-    const timer = window.setInterval(() => setTick((n) => n + 1), CANDIDATES_REFRESH.ms);
+    // Never poll a hidden tab (docs/deployment.md): the next tick after it shows again reads.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") setTick((n) => n + 1);
+    }, CANDIDATES_REFRESH.ms);
     return () => window.clearInterval(timer);
   }, [kb]);
   const list = useResilient(

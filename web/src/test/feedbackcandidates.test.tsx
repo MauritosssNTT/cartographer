@@ -224,13 +224,26 @@ describe("useReportCandidates", () => {
   it("clears a list already shown when feedback is switched off", async () => {
     CANDIDATES_REFRESH.ms = 20;
     retry.baseMs = 5;
-    let calls = 0;
+    let off = false;
     stubApi({
-      [LIST]: () => (++calls === 1 ? json({ candidates: [cand()], destination: "github" }) : json({ error: { code: "feedback_off", message: "off" } }, 404)),
+      [LIST]: () => (off ? json({ error: { code: "feedback_off", message: "off" } }, 404) : json({ candidates: [cand()], destination: "github" })),
     });
     const { result } = renderHook(() => useReportCandidates("kb-a", 0));
     await waitFor(() => expect(result.current).toHaveLength(1));
+    off = true;
     await waitFor(() => expect(result.current).toHaveLength(0));
+  });
+
+  it("does not read again while the tab is hidden", async () => {
+    CANDIDATES_REFRESH.ms = 20;
+    let calls = 0;
+    stubApi({ [LIST]: () => (++calls, json({ candidates: [], destination: "github" })) });
+    const hidden = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    renderHook(() => useReportCandidates("kb-a", 0));
+    await waitFor(() => expect(calls).toBe(1));
+    await new Promise((r) => setTimeout(r, 80));
+    expect(calls).toBe(1);
+    hidden.mockRestore();
   });
 
   it("keeps a list already shown through a transient failure", async () => {
