@@ -2582,7 +2582,7 @@ func removeCuratedEntry(k *kb.KB, mapName string, id okf.ConceptID) (removed boo
 func removeCuratedEntryAt(k *kb.KB, mapName string, id okf.ConceptID) (removed bool, kept string, keptLine int, err error) {
 	content, hash, err := k.IndexHash(mapName)
 	if err != nil {
-		return false, "", 0, fmt.Errorf("unreadable: %w", err)
+		return false, "", 0, errors.New("unreadable: " + relPathErr(err, k.Root, k.DataRoot()))
 	}
 	fmRaw, body, hasFM := okf.SplitFrontmatter(content)
 	newBody, removed, kept, bodyLine := dropEntryLines(k, mapName+"/index.md", body, id)
@@ -2780,7 +2780,7 @@ func appendCuratedEntry(k *kb.KB, mapName string, id okf.ConceptID) error {
 func appendCuratedEntries(k *kb.KB, mapName, heading string, ids []okf.ConceptID) (before string, err error) {
 	content, hash, err := k.IndexHash(mapName)
 	if err != nil {
-		return "", fmt.Errorf("unreadable: %w", err)
+		return "", errors.New("unreadable: " + relPathErr(err, k.Root, k.DataRoot()))
 	}
 	fmRaw, body, hasFM := okf.SplitFrontmatter(content)
 	entries := make([]string, len(ids))

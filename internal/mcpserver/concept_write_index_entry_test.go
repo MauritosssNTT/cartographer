@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BeppeTemp/cartographer/internal/kb"
 )
 
 // D1099: concept_write takes index_entry with the concept_new semantics, and
@@ -160,6 +162,68 @@ func TestConceptWrite_IndexEntry_UnreadableErrorsCarryNoServerPath(t *testing.T)
 			}
 		}
 	}
+}
+
+// An index that becomes unreadable after planning (appendCuratedEntries) and one
+// that is unreadable when a delete drops its entry (removeCuratedEntryAt) reach
+// the caller as notes: neither carries the server's data directory (#1911).
+func TestIndexEntry_UnreadableAtEditTimeCarriesNoServerPath(t *testing.T) {
+	asDir := func(t *testing.T, k *kb.KB, mapName string) {
+		t.Helper()
+		idx := filepath.Join(k.DataRoot(), mapName, "index.md")
+		if err := os.Remove(idx); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(idx, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	noRoot := func(t *testing.T, k *kb.KB, text string) {
+		t.Helper()
+		if !strings.Contains(text, "unreadable") {
+			t.Fatalf("want an unreadable note: %s", text)
+		}
+		for _, root := range []string{k.Root, k.DataRoot()} {
+			if strings.Contains(text, root) {
+				t.Fatalf("the result carries the server path %q: %s", root, text)
+			}
+		}
+	}
+
+	t.Run("append after planning", func(t *testing.T) {
+		k := setupTestKB(t)
+		if err := os.RemoveAll(filepath.Join(k.Root, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		seedIndexMaps(t, k, mapFiles("pages", ""))
+		s := New("test")
+		RegisterKBTools(s, k, Deps{})
+		indexPatchHook = func(mapName string) error { asDir(t, k, mapName); return nil }
+		t.Cleanup(func() { indexPatchHook = nil })
+		text, isErr := callJSON(t, s, adminCtx, "concept_write", cwArgs("pages/fresh", "Fresh", "# Fresh\n", map[string]any{"index_entry": true}))
+		if isErr {
+			t.Fatalf("want a note, got an error: %s", text)
+		}
+		noRoot(t, k, text)
+	})
+
+	t.Run("delete drops the entry", func(t *testing.T) {
+		k := setupTestKB(t)
+		if err := os.RemoveAll(filepath.Join(k.Root, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		files := mapFiles("pages", "")
+		files["pages/gone.md"] = "---\ntype: Note\ntitle: gone\n---\n# gone\n"
+		seedIndexMaps(t, k, files)
+		asDir(t, k, "pages")
+		s := New("test")
+		RegisterKBTools(s, k, Deps{})
+		text, isErr := callJSON(t, s, adminCtx, "concept_delete", `{"id":"pages/gone"}`)
+		if isErr {
+			t.Fatalf("want a note, got an error: %s", text)
+		}
+		noRoot(t, k, text)
+	})
 }
 
 // The index edit failing after the write is a note, not an error; the KB is
