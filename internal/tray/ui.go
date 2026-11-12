@@ -64,6 +64,9 @@ func StatusLine(s Snapshot) string {
 		if client {
 			return s.serverName() + ": unreachable"
 		}
+		if s.Foreign != "" {
+			return "another program answers on " + s.Foreign
+		}
 		return "stopped"
 	case StateStarting:
 		if client {
@@ -178,6 +181,9 @@ func InfoItems(s Snapshot) []MenuItem {
 		head.Badge, head.Tone = "Not ready", ToneBusy
 	case s.State == StateStopped:
 		head.Badge, head.Tone = "Stopped", ToneDown
+		if s.Foreign != "" {
+			head.Badge = "Port in use"
+		}
 		if s.Mode == ModeClient {
 			head.Badge = "Unreachable"
 			if s.Rejected {

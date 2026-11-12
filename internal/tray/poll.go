@@ -74,9 +74,35 @@ func NewDeps(statusFn func() (service.Status, error), logPath string) Deps {
 	}
 }
 
+// ErrForeignListener is the probe error of an address where a program answers
+// that is not a Cartographer server: a 200 without the /health body of one, a
+// body that is not JSON, or another status. The snapshot is Stopped and says
+// so (Snapshot.Foreign), never Running (#1998).
+var ErrForeignListener = errors.New("tray: another program answers on the server address")
+
 // probeHealth reads /health of the server at addr. The tray carries no token:
 // /health is exempt from authentication.
 func probeHealth(addr string) (*client.Health, error) {
+	h, err := probeHealthRaw(addr)
+	return foreignCheck(h, err)
+}
+
+// foreignCheck turns an answer that is not Cartographer's into
+// ErrForeignListener. A transport failure, a bootstrapping server and a 401
+// from a remote keep their own error: only an answer that arrived and is not
+// ours is foreign.
+func foreignCheck(h *client.Health, err error) (*client.Health, error) {
+	var re *client.RemoteError
+	switch {
+	case err == nil && !h.IsServer():
+		return nil, ErrForeignListener
+	case errors.As(err, &re) && (re.State == client.RemoteFailed || re.HTTPStatus != 0):
+		return nil, fmt.Errorf("%w (%v)", ErrForeignListener, err)
+	}
+	return h, err
+}
+
+func probeHealthRaw(addr string) (*client.Health, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
