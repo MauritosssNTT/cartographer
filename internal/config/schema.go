@@ -287,7 +287,7 @@ var Retired = settingschema.Registry{Removed: []settingschema.Removed{
 	{Path: "mcp.mount_mode", Plan: 325, Note: "every HTTP server serves the one routed mount at /mcp/routed (D288, removed by D325)"},
 	{Path: "mcp.tool_prefix_mode", Plan: 325, Note: "tools are never prefixed (D288, removed by D325)"},
 	{Path: "kbs[].tool_prefix", Plan: 325, Note: "tools are never prefixed (D288, removed by D325)"},
-	{Path: "peers", Plan: 586, Note: "agent-to-agent messaging (D341, beta) was reverted and no longer exists"},
+	{Path: "peers", Plan: 586, Note: "agent-to-agent messaging (beta, reverted by PR #586) no longer exists"},
 }, Moved: []settingschema.Moved{
 	// git.identity said what git.identities.default says (D1725).
 	{From: "git.identity", To: "git.identities.default", Description: "The git identity, Name <email>, the server commits as in every KB without its own entry in git.identities: the author and the committer of the commits it makes with no writer of their own (the unattended repair, merges, conflict resolution) and of a write whose client sends no valid Cartographer-Author. Set it when the remote's forge rejects commits whose author or committer is not one of its accounts. Empty keeps the server identity, Cartographer <cartographer@host>."},
