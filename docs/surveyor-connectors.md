@@ -94,9 +94,11 @@ connector process is outside this control: it reaches whatever the Surveyor's ne
 
 ## Testing with `plugin test`
 
-`cartographer plugin test <dir>` runs each recipe and connector against `tests/<name>.yaml` and the conformance checks,
-offline: a Starlark recipe's `http.request` is answered from recorded exchanges, an exec program is run for real with the
-scenario's `env`, and a stdio connector is started and called through the same connector set a Surveyor opens. Record the
+`cartographer plugin test <dir>` runs each recipe and connector against `tests/<name>.yaml` and the conformance checks.
+A Starlark recipe's `http.request` is answered from recorded exchanges, so it touches no network. An exec program and a
+stdio connector are **run for real, as you, unapproved and with your network** (the command is printed before it starts),
+the exec program with the scenario's `env` and the connector through the same connector set a Surveyor opens; an http
+connector is never reached, and its calls are only checked against the allowlist. Record the
 exchanges your recipe needs, write the steps you expect, add a second stage so the checks can see an unchanged entry stay
 unchanged. The scenario format and the checks are in [plugins.md](plugins.md#testing-a-surveyor-side-plugin-test).
 
