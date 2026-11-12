@@ -168,11 +168,13 @@ export function newMessageId(now, random = Math.random) {
 }
 
 /** The JSON-RPC message to forward: a server-assigned id, the validated
- *  template and trimmed vars, and `index_entry: true`. The guestbook's
- *  `messages/` index is curated, so a message without its entry is an
- *  `index_incomplete` finding the write gate refuses (D907); `true` lets the
- *  server write the entry from the message's title, and nothing the visitor
- *  sent as an index_entry is forwarded. Nothing else the visitor sent survives
+ *  template and trimmed vars, and `index_entry: true`. It is set so the write
+ *  gate accepts a message whether the map's index is curated (a guestbook
+ *  bootstrapped before the seed's generated index: without the entry the
+ *  message is an `index_incomplete` finding the gate refuses, D907) or
+ *  generated (where it is a no-op); `true` lets the server write the entry
+ *  from the message's title, and nothing the visitor sent as an index_entry is
+ *  forwarded. Nothing else the visitor sent survives
  *  in the arguments except kb. */
 export function rewriteCall(msg, checked, id) {
   return {

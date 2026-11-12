@@ -370,7 +370,7 @@ test("handler: an approved message is forwarded with the write token and a serve
     assert.equal(h.seen[0].auth, "Bearer write-token");
     const sent = JSON.parse(h.seen[0].body);
     assert.match(sent.params.arguments.id, /^messages\/\d{4}-\d{2}-\d{2}-[0-9a-z]{6}$/);
-    // The messages/ index is curated: without index_entry the write gate refuses the message (#1869).
+    // On a curated messages/ index, without index_entry the write gate refuses the message (#1869); on a generated one it is a no-op.
     assert.strictEqual(sent.params.arguments.index_entry, true);
   } finally {
     h.restore();
