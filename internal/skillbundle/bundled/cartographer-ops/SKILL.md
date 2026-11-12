@@ -101,9 +101,9 @@ A KB syncs exactly when it has a remote, and every write is one commit: neither 
    `cartographer paths list` and follow `references/placeholders.md`.
 9. Asked to see a KB, give the Atlas link: `ui_url` in `kb_status` (present only when the agent
    runs on the server's own machine), or the `ui:` line of `cartographer service status` on the
-   server host. No `ui_url` means stdio, `CARTOGRAPHER_WEB_ENABLED=false`, a stopped service, a
-   server bound to a specific address, or a server on another machine or behind a proxy: give the
-   address the user reaches the server by, with `/ui/?kb=<name>`.
+   server host. No `ui_url` means stdio, `CARTOGRAPHER_WEB_ENABLED=false`, a stopped service,
+   or a server on another machine or behind a proxy: give the address the user reaches the server
+   by, with `/ui/?kb=<name>`.
 
 ## Upgrade
 
