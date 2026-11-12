@@ -182,4 +182,54 @@ describe("the clustered graph's data layer", () => {
     await waitFor(() => expect(clusterCalls(m).length).toBe(before + 1));
     expect(params(clusterCalls(m).at(-1)!).get("focus")).toBe("notes/folded");
   });
+
+  it("sends focus for a palette pick of a folded concept", async () => {
+    const m = stubApi({
+      "/overview": () => json(large),
+      "/graph/clusters": () => json(clusters()),
+      "/search": () => json({ query: "folded", count: 1, results: [{ id: "notes/folded", title: "Folded", score: 1 }] }),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(clusterCalls(m).length).toBeGreaterThan(0));
+    const before = clusterCalls(m).length;
+    await user.keyboard("{Control>}k{/Control}");
+    await user.type(await screen.findByRole("textbox", { name: /search concepts/i }), "folded");
+    await user.click(await screen.findByRole("option", { name: /Folded/ }));
+    await waitFor(() => expect(clusterCalls(m).length).toBeGreaterThan(before));
+    expect(params(clusterCalls(m).at(-1)!).get("focus")).toBe("notes/folded");
+  });
+
+  it("asks again for a concept that was drawn and folded away since", async () => {
+    // The first answer does not draw it (asked once with focus), the second does.
+    let answers = 0;
+    let drawFolded = () => answers > 1;
+    const folded = { id: "notes/folded", collection: "notes", in_degree: 0, out_degree: 0 };
+    const m = stubApi({
+      "/overview": () => json(large),
+      "/graph/clusters": () => {
+        answers++;
+        return json(clusters(drawFolded() ? { nodes: [...graph.nodes, folded] } : {}));
+      },
+    });
+    window.history.replaceState(null, "", "/ui/?kb=kb-a&concept=notes%2Ffolded");
+    render(<App />);
+    await waitFor(() => expect(answers).toBe(2));
+    await act(async () => {});
+    // Deselected, then a refresh folds it; selecting it again asks again.
+    drawFolded = () => false;
+    act(() => {
+      window.history.pushState(null, "", "/ui/?kb=kb-a");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    act(() => live.bump());
+    await waitFor(() => expect(params(clusterCalls(m).at(-1)!).get("focus")).toBeNull());
+    const before = clusterCalls(m).length;
+    act(() => {
+      window.history.pushState(null, "", "/ui/?kb=kb-a&concept=notes%2Ffolded");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await waitFor(() => expect(clusterCalls(m).length).toBe(before + 1));
+    expect(params(clusterCalls(m).at(-1)!).get("focus")).toBe("notes/folded");
+  });
 });

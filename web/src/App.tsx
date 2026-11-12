@@ -549,7 +549,13 @@ export function App() {
       ? view.concept
       : null;
   useEffect(() => {
-    if (!undrawn || undrawn === focusAsked.current) return;
+    // Once the concept is drawn (or deselected), a later fold may hide it again
+    // and must be able to ask once more.
+    if (!undrawn) {
+      focusAsked.current = null;
+      return;
+    }
+    if (undrawn === focusAsked.current) return;
     focusAsked.current = undrawn;
     setFocusNonce((n) => n + 1);
   }, [undrawn]);

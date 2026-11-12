@@ -28,9 +28,9 @@ promoted. The cost is a second graph route a client has to choose between.
 - Memoizing the aggregated cluster edges too: their weights depend on the scope
   and the unfold set, and at 50,000 concepts and 250,000 links the aggregation
   costs a small fraction of building the visible graph the request needs anyway.
-- Choosing the route from the first graph answer: it costs a flat request of up
-  to 2,000 nodes on every large KB before the clusters; the overview is fetched
-  in parallel anyway.
+- Waiting for the overview before any graph request: on a large KB the
+  overview is the slow request, so the page would stay empty; a KB whose size
+  is not known yet is read flat once, and clustered from then on.
 - An unbounded `unfold` list: far more than 50 ids never fit the 400-element
   budget, so a longer list is a malformed client, not a view.
 
