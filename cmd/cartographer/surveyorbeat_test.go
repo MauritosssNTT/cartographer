@@ -39,7 +39,7 @@ func TestSurveyorBeatEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := &surveyor.Beater{API: c, Surveyor: "docs-night-ab12cd", Perimeter: "docs-night", Version: "1.0", KBs: []string{"kb-a"}, Settings: rep}
+	b := &surveyor.Beater{API: slowBeat{c}, Surveyor: "docs-night-ab12cd", Perimeter: "docs-night", Version: "1.0", KBs: []string{"kb-a"}, Settings: rep}
 	b.Beat(context.Background(), surveyor.State{Run: surveyor.StateWaiting})
 
 	get := func(token, path string, out any) {
@@ -95,28 +95,49 @@ func TestSurveyorBeatEndToEnd(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	wc := client.New(srv.URL+"/mcp", "surveyor-tok").WithInsecureHTTP(true).WithKB("kb-a")
 	_, _ = wc.Call("kb_status", map[string]any{})
-	b.Beat(context.Background(), surveyor.State{Run: surveyor.StateWaiting}) // kept only
-	if d, _ := sendAndIdle(b); d < d0 {
-		t.Fatalf("a surveyor call moved the idle signal: %v < %v", d, d0)
+	d1 := beatAndIdle(t, b, 1)
+	if d1 < d0 {
+		t.Fatalf("a surveyor call moved the idle signal: %v < %v", d1, d0)
 	}
 	pc := client.New(srv.URL+"/mcp", "person-tok").WithInsecureHTTP(true).WithKB("kb-a")
+	before := time.Now()
 	if _, err := pc.Call("kb_status", map[string]any{}); err != nil {
 		t.Fatal(err)
 	}
-	if d, _ := sendAndIdle(b); d >= d0 {
-		t.Fatalf("a person's call did not reset idle: %v >= %v", d, d0)
+	d2 := beatAndIdle(t, b, 2)
+	if d2 >= d1 {
+		t.Fatalf("a person's call did not reset idle: %v >= %v", d2, d1)
+	}
+	// The server runs in-process on this clock: the idle time cannot exceed what
+	// has passed since the call.
+	if el := time.Since(before); d2 > el {
+		t.Fatalf("idle after a person's call = %v, more than the %v since the call", d2, el)
 	}
 }
 
-// sendAndIdle forces a beat through the public surface (Beat with stopped would
-// remove the declaration, so a fresh snapshot is sent by the next tick; here a
-// short interval goroutine is the real path).
-func sendAndIdle(b *surveyor.Beater) (time.Duration, bool) {
-	b.Interval = 10 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	b.Start(ctx)
-	time.Sleep(80 * time.Millisecond)
+// slowBeat delays every heartbeat, as a loaded gate does: the answer a test
+// reads must not depend on the beat being quick.
+type slowBeat struct{ surveyor.BeatAPI }
+
+func (s slowBeat) Heartbeat(report any, timeout time.Duration) (*client.HeartbeatAnswer, error) {
+	time.Sleep(40 * time.Millisecond)
+	return s.BeatAPI.Heartbeat(report, timeout)
+}
+
+// beatAndIdle refreshes the beater's answer synchronously and reads the idle
+// time from it: Beat sends at once when the last run's time changes, so n (a
+// strictly increasing counter) makes this beat a send, and the answer it reads
+// is the one just received, whatever the load. The interval stays the default,
+// so the answer is never stale; unknown fails the test.
+func beatAndIdle(t *testing.T, b *surveyor.Beater, n int) time.Duration {
+	t.Helper()
+	b.Beat(context.Background(), surveyor.State{
+		Run:     surveyor.StateWaiting,
+		LastRun: surveyor.LastRun{At: time.Unix(1_700_000_000+int64(n), 0)},
+	})
 	d, known, _ := b.IdleFor(context.Background(), "kb-a")
-	return d, known
+	if !known {
+		t.Fatal("idle unknown right after a beat")
+	}
+	return d
 }
