@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,22 @@ func TestSchedulerRefusedUnderSandboxedHome(t *testing.T) {
 	for _, cmd := range []string{"launchctl", "systemctl", "powershell.exe", "wsl.exe", "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"} {
 		if _, err := execRun(cmd, "print"); !errors.Is(err, errSandboxHome) {
 			t.Errorf("%s under a sandboxed HOME: err = %v, want errSandboxHome", cmd, err)
+		}
+	}
+	// The text says what was refused, not what the caller was doing: a read
+	// through interop (`doctor` reading .wslconfig) has no unit files.
+	err := guardScheduler("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+	if err == nil {
+		t.Fatal("powershell.exe under a sandboxed HOME was not refused")
+	}
+	for _, want := range []string{"HOME=/tmp/sandbox", "account home /home/user", "powershell.exe was not run"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+	for _, bad := range []string{"unit files", "written", "registered"} {
+		if strings.Contains(err.Error(), bad) {
+			t.Errorf("error %q is install-specific (%q)", err, bad)
 		}
 	}
 	if err := guardScheduler("git"); err != nil {
