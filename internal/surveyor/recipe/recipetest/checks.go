@@ -25,11 +25,11 @@ type Check struct{ Name, Summary string }
 // compares the two, so a check added here is documented in the same change.
 var Checks = []Check{
 	{"spec", "spec is valid, declares spec, check and list, and its env and settings are within what the manifest declares"},
-	{"parser", "no verb call ended in protocol_error: every output line passes the production parser and its caps"},
-	{"entries", "keys are unique, a feed entry has a revision, change is added or modified"},
+	{"parser", "no verb call (the steps and the automatic calls alike) ended in a protocol_error the parser raises for another reason than the entries and system checks name: every output line passes the production parser and its caps"},
+	{"entries", "the production parser accepted every listing's entries: keys are present and unique, a feed entry has a title and a revision, change is added or modified"},
 	{"repeatable", "listing twice with the same cursor and fixtures gives the same entries and cursor"},
 	{"incremental", "a listing from the returned cursor does not re-emit an entry whose revision did not change"},
-	{"system", "a system recipe's check answers read_only, and its list ends with an empty cursor and has no deletes"},
+	{"system", "a system recipe's check answers read_only, and the parser accepted its list: it ends with an empty cursor and has no deletes"},
 	{"fetch", "fetch answers every key it is asked"},
 	{"protocol", "an exec script exits 64 with no output on an unknown verb and on another protocol number"},
 	{"secrets", "no env test value of 4 bytes or more appears in an entry, a content or an error detail"},
@@ -37,25 +37,78 @@ var Checks = []Check{
 }
 
 // automatic runs the checks of Checks that judge a recipe, in order; the last,
-// connector, is RunConnector's.
+// connector, is RunConnector's. The parser verdict is read last of them, so it
+// covers every verb call (the steps, the spec, the second listing, the system
+// check and the fetch), and is placed where Checks lists it.
 func (x *run) automatic(ctx context.Context) {
 	stage := ""
 	if len(x.lists) > 0 {
 		stage = x.lists[0].stage
 	}
 	x.checkSpec(ctx, stage)
-	if len(x.proto) > 0 {
-		x.add("parser", errors.New(x.proto[0]), "")
-	} else {
-		x.add("parser", nil, "")
-	}
+	parserAt := len(x.out)
+	x.out = append(x.out, Result{})
 	x.checkEntries()
+	x.label = "second listing: "
 	x.checkRepeatable(ctx)
+	x.label = ""
 	x.checkIncremental()
 	x.checkSystem(ctx, stage)
 	x.checkFetch(ctx, stage)
 	x.checkProtocol(ctx)
 	x.checkSecrets()
+	x.checkParser(parserAt)
+}
+
+// protoErr is one protocol_error a verb call ended in; class says which check
+// owns it (classEntries, classSystem) or is "" for the parser check.
+type protoErr struct{ class, text string }
+
+const (
+	classEntries = "entries"
+	classSystem  = "system"
+)
+
+// classOf says which rule of the listing protocol a protocol_error broke. The
+// production parser enforces them all and names the line; this reads its
+// verdict, it does not judge the entries again.
+// TRAP: it matches the parser's messages (internal/surveyor/recipe/exec.go,
+// entryOf and parseLines), so the fixtures of the table in checks_test fail
+// loudly when a message changes.
+func classOf(verb string, err error) string {
+	var re *recipe.Error
+	if verb != "list" || !errors.As(err, &re) {
+		return ""
+	}
+	for _, m := range []string{"key is required", "title and revision are required", "change is added or modified", "duplicate key"} {
+		if strings.Contains(re.Detail, m) {
+			return classEntries
+		}
+	}
+	for _, m := range []string{"a system listing has no delete lines", "a system listing ends with an empty next_cursor"} {
+		if strings.Contains(re.Detail, m) {
+			return classSystem
+		}
+	}
+	return ""
+}
+
+// protoOf lists the protocol errors of one class.
+func (x *run) protoOf(class string) []string {
+	var out []string
+	for _, p := range x.proto {
+		if p.class == class {
+			out = append(out, p.text)
+		}
+	}
+	return out
+}
+
+func (x *run) checkParser(at int) {
+	n := len(x.out)
+	x.verdict("parser", x.protoOf(""))
+	x.out[at] = x.out[n]
+	x.out = x.out[:n]
 }
 
 func (x *run) checkSpec(ctx context.Context, stage string) {
@@ -88,24 +141,8 @@ func (x *run) checkSpec(ctx context.Context, stage string) {
 	x.verdict("spec", probs)
 }
 
-func (x *run) checkEntries() {
-	var probs []string
-	for i, l := range x.lists {
-		seen := map[string]bool{}
-		for _, e := range l.o.entries {
-			switch {
-			case seen[e.Key]:
-				probs = append(probs, fmt.Sprintf("list %d: key %q twice", i+1, e.Key))
-			case x.r.Shape() == recipe.ShapeFeed && e.Revision == "":
-				probs = append(probs, fmt.Sprintf("list %d: key %q has no revision", i+1, e.Key))
-			case x.r.Shape() == recipe.ShapeFeed && e.Change != recipe.Added && e.Change != recipe.Modified:
-				probs = append(probs, fmt.Sprintf("list %d: key %q has change %q", i+1, e.Key, e.Change))
-			}
-			seen[e.Key] = true
-		}
-	}
-	x.verdict("entries", probs)
-}
+// checkEntries reports the entry rules the production parser enforced.
+func (x *run) checkEntries() { x.verdict("entries", x.protoOf(classEntries)) }
 
 // verdict records a pass for no problem, else a failure naming the first few.
 func (x *run) verdict(check string, probs []string) {
@@ -174,11 +211,7 @@ func (x *run) checkSystem(ctx context.Context, stage string) {
 	if o := x.call(ctx, stage, "check", "", nil); o.err != nil {
 		probs = append(probs, fmt.Sprintf("check: %v", o.err))
 	}
-	for i, l := range x.lists {
-		if l.o.next != "" || len(l.o.deletes) > 0 {
-			probs = append(probs, fmt.Sprintf("list %d: a system listing ends with an empty cursor and has no deletes", i+1))
-		}
-	}
+	probs = append(probs, x.protoOf(classSystem)...)
 	x.verdict("system", probs)
 }
 
@@ -202,9 +235,6 @@ func (x *run) checkFetch(ctx context.Context, stage string) {
 		return
 	}
 	o := x.call(ctx, stage, "fetch", "", keys)
-	if o.err != nil && code(o.err) == recipe.CodeProtocolError {
-		x.proto = append(x.proto, "fetch: "+o.err.Error())
-	}
 	x.add("fetch", o.err, "")
 }
 
@@ -274,7 +304,7 @@ func (x *run) checkSecrets() {
 	slices.Sort(names)
 	for _, n := range names {
 		v := x.in.Scenario.Env[n]
-		if len(v) < 4 {
+		if len(v) < 4 || x.in.Scenario.fixturePaths[n] {
 			continue
 		}
 		for _, s := range x.seen {

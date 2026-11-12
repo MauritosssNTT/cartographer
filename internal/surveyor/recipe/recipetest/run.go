@@ -12,6 +12,7 @@ import (
 	"github.com/BeppeTemp/cartographer/internal/plugin/core"
 	"github.com/BeppeTemp/cartographer/internal/plugin/starcore"
 	"github.com/BeppeTemp/cartographer/internal/plugin/starcore/recipes"
+	"github.com/BeppeTemp/cartographer/internal/surveyor/connector"
 	"github.com/BeppeTemp/cartographer/internal/surveyor/recipe"
 )
 
@@ -44,6 +45,7 @@ type Input struct {
 
 type run struct {
 	in     Input
+	env    map[string]string // the mapped variables, which a report line redacts
 	r      recipe.Recipe
 	replay *starcore.Replay
 	stage  string
@@ -51,8 +53,14 @@ type run struct {
 	spec   *recipe.Spec
 	lists  []listed
 	next   string
-	proto  []string
-	seen   [][2]string // where, text
+	// proto is every protocol_error a verb call ended in, whichever call it was
+	// (the steps and the automatic calls), except the steps that expect one.
+	proto []protoErr
+	// label prefixes what a protocol error names ("step 2 ", "second listing ").
+	label string
+	// expectProto is set while a step that expects a protocol_error runs.
+	expectProto bool
+	seen        [][2]string // where, text
 }
 
 type outcome struct {
@@ -84,6 +92,7 @@ func Run(ctx context.Context, in Input) []Result {
 		env = sc.Env
 		x.r = recipe.NewStarlark(sc)
 	}
+	x.env = env
 	defer x.setEnv(env)()
 	x.steps(ctx)
 	x.automatic(ctx)
@@ -123,7 +132,9 @@ func (x *run) add(check string, err error, skip string) {
 	case skip != "":
 		r.Status, r.Detail = Skip, skip
 	case err != nil:
-		r.Status, r.Detail = Fail, err.Error()
+		// Whatever a failure prints (a cursor, the keys a step got) may hold a
+		// mapped variable's value the recipe echoed: redact it like a recipe error.
+		r.Status, r.Detail = Fail, connector.RedactEnv(err.Error(), x.env)
 	}
 	x.out = append(x.out, r)
 }
@@ -202,6 +213,9 @@ func (x *run) call(ctx context.Context, stage, verb, cursor string, keys []strin
 	}
 	if o.err != nil {
 		x.note(verb+" error", o.err.Error())
+		if code(o.err) == recipe.CodeProtocolError && !x.expectProto {
+			x.proto = append(x.proto, protoErr{classOf(verb, o.err), x.label + verb + ": " + o.err.Error()})
+		}
 	}
 	return o
 }
@@ -226,10 +240,9 @@ func (x *run) steps(ctx context.Context) {
 		if cursor == "@next" {
 			cursor = x.next
 		}
+		x.label, x.expectProto = fmt.Sprintf("step %d ", i+1), s.Expect.Error == recipe.CodeProtocolError
 		o := x.call(ctx, s.Stage, s.Verb, cursor, s.Request.Keys)
-		if o.err != nil && code(o.err) == recipe.CodeProtocolError && s.Expect.Error != recipe.CodeProtocolError {
-			x.proto = append(x.proto, fmt.Sprintf("step %d %s: %v", i+1, s.Verb, o.err))
-		}
+		x.label, x.expectProto = "", false
 		if s.Verb == "list" && o.err == nil {
 			x.lists = append(x.lists, listed{cursor, s.Stage, s.Request.Cursor == "@next", o})
 			x.next = o.next

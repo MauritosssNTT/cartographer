@@ -18,8 +18,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// maxFile bounds a scenario and each body_file: fixtures are small.
-const maxFile = 1 << 20
+// maxFile bounds a scenario and each body_file: fixtures are small. maxTotal
+// bounds everything one scenario reads, so many body_files cannot add up.
+const (
+	maxFile  = 1 << 20
+	maxTotal = 4 << 20
+)
 
 // Scenario is tests/<name>.yaml. It is not stored with the plugin and not part
 // of its digest: the tree reader ignores the tests/ folder.
@@ -35,6 +39,11 @@ type Scenario struct {
 	Steps []Step      `yaml:"steps"`
 	// Calls are the tool calls of a connector's scenario.
 	Calls []Call `yaml:"calls"`
+
+	// fixturePaths are the env names whose value holds {tests}: a path the
+	// author's own folder gave, not a credential, so the secrets check does not
+	// watch it.
+	fixturePaths map[string]bool
 }
 
 // Call is one tool call of a connector, made through the connector set a
@@ -103,7 +112,13 @@ var stepVerbs = map[string]bool{"spec": true, "check": true, "list": true, "fetc
 
 // ReadFile reads and judges the shape of a scenario file; dir is the plugin's tests/ folder.
 func ReadFile(dir, name string) (*Scenario, error) {
-	data, err := readCapped(filepath.Join(dir, name+".yaml"))
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	budget := maxTotal
+	data, err := readCapped(root, name+".yaml", &budget)
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +133,12 @@ func ReadFile(dir, name string) (*Scenario, error) {
 	}
 	abs, _ := filepath.Abs(dir)
 	for k, v := range sc.Env {
+		if strings.Contains(v, "{tests}") {
+			if sc.fixturePaths == nil {
+				sc.fixturePaths = map[string]bool{}
+			}
+			sc.fixturePaths[k] = true
+		}
 		sc.Env[k] = strings.ReplaceAll(v, "{tests}", abs)
 	}
 	for i := range sc.HTTP {
@@ -128,7 +149,7 @@ func ReadFile(dir, name string) (*Scenario, error) {
 		if r.Body != "" || !filepath.IsLocal(r.BodyFile) {
 			return nil, fmt.Errorf("%s.yaml: http[%d]: body_file is a path inside tests/ and replaces body", name, i)
 		}
-		b, err := readCapped(filepath.Join(dir, r.BodyFile))
+		b, err := readCapped(root, r.BodyFile, &budget)
 		if err != nil {
 			return nil, fmt.Errorf("%s.yaml: http[%d]: %v", name, i, err)
 		}
@@ -150,15 +171,31 @@ func ReadFile(dir, name string) (*Scenario, error) {
 	return &sc, nil
 }
 
-func readCapped(path string) ([]byte, error) {
-	f, err := os.Open(path)
+// readCapped reads a regular file of the tests/ folder, never a symlink or a
+// device: a fixture is data the author committed, and the folder may come from
+// a plugin that is not trusted. budget is what the scenario may still read.
+func readCapped(root *os.Root, rel string, budget *int) ([]byte, error) {
+	fi, err := root.Lstat(rel)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file (a symlink is refused)", filepath.Base(rel))
+	}
+	f, err := root.Open(rel)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxFile+1))
-	if err == nil && len(b) > maxFile {
-		err = fmt.Errorf("%s is over %d bytes", filepath.Base(path), maxFile)
+	limit := min(maxFile, *budget)
+	b, err := io.ReadAll(io.LimitReader(f, int64(limit)+1))
+	if err == nil && len(b) > limit {
+		if limit < maxFile {
+			err = fmt.Errorf("the scenario reads over %d bytes in total", maxTotal)
+		} else {
+			err = fmt.Errorf("%s is over %d bytes", filepath.Base(rel), maxFile)
+		}
 	}
+	*budget -= len(b)
 	return b, err
 }

@@ -184,9 +184,9 @@ lines of protocol v2 and reads with the parser exec recipes use, so the caps, th
 (`protocol_error`, `list_failed`, `identity_not_read_only`) are the same. A failure of the script is `list_failed`,
 `check_failed` or `fetch_failed` with the mapped variables redacted; a verb it does not register answers like exit 64.
 
-A plugin's recipes are tested offline, before any Surveyor runs them, with `cartographer plugin test <dir>`: each recipe
-runs against a scenario of `tests/<name>.yaml` (a Starlark recipe's `http.request` answered from recorded exchanges) and
-against the conformance checks, through this same parser (`docs/plugins.md` §Testing a surveyor side).
+A plugin's recipes are tested before any Surveyor runs them, with `cartographer plugin test <dir>`: each recipe
+runs against a scenario of `tests/<name>.yaml` (a Starlark recipe's `http.request` answered from recorded exchanges; an
+exec recipe's command is run as the user, unapproved) and against the conformance checks, through this same parser (`docs/plugins.md` §Testing a surveyor side).
 
 ## Failures
 
@@ -366,7 +366,7 @@ elif verb == "list":
             print(json.dumps({"delete": {"key": p["id"]}}))
             continue
         print(json.dumps({"entry": {
-            "key": p["id"], "title": p["title"], "revision": p["version"],
+            "key": p["id"], "title": p["title"], "revision": str(p["version"]),
             "change": "added" if p["version"] == 1 else "modified",
             "locator": "https://wiki.example.com/pages/" + p["id"],
         }}))

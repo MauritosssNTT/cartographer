@@ -313,8 +313,15 @@ It runs code on the Surveyor, so the preview lists every file with the execute b
 connector of the folder against a scenario you wrote and against the conformance checks below. It reads the folder as `plugin validate` does (a tree with problems is
 exit 2), builds each recipe with the Surveyor's own plugin loader (the command, the mapped variables, the limits) and runs
 it through the production recipe code, so a recipe passes only when a Surveyor would accept what it prints. It needs no
-server, token, model or network. Exit 0 all passed, 1 a check failed, 2 it could not run (a problem in the tree, a missing
-or malformed scenario). Only recipes are tested in this version; a connector has no scenario yet.
+server, token or model. Exit 0 all passed, 1 a check failed, 2 it could not run (a problem in the tree, a missing
+or malformed scenario). Only recipes are tested in this version; a connector has no scenario yet. The report has one line per step, `step N <verb>`, with `pass` or `fail` and the reason;
+`--output json` prints `{schema, passed, results: [{target, check, status, detail}]}`.
+
+**Trust: an exec recipe runs.** Only a Starlark recipe is offline: it runs in process and its `http.request` is answered
+from recordings. An exec recipe is the folder's own program, and `plugin test` starts it **as you, with your network and
+your files, with none of the approval `plugin install` asks for**. Before it runs, the command prints one line on stderr
+(`running <recipe> as you, unapproved: <command and arguments>`, escaped like the install preview). Test a folder you did not write
+only after reading that command.
 
 The scenario of the recipe or connector `<name>` is `tests/<name>.yaml`, required (a recipe and a connector of one name
 share the file: `steps` are the recipe's, `calls` the connector's). The `tests/` folder is ignored by the tree reader:
@@ -338,8 +345,10 @@ it is neither stored nor part of the digest. Unknown keys are an error.
   credentials in the url, the manifest's `net`, header and size caps, the redirect rules for a recorded 3xx) and then
   answers from the recording instead of resolving or dialing, so a request nobody recorded fails the step naming its
   method and url. A step of `stage: s` sees the exchanges of stage `s` and those with no stage, so a later listing can see
-  a changed world. The replay is not a network seam and the Surveyor never sets it; the private-network grant is
-  not exercised, because nothing is dialed.
+  a changed world. The replay is not a network seam and the Surveyor never sets it. The replay resolves nothing, so two
+  checks of a live call are **not** exercised: the refusal of a private, loopback or link-local address and the
+  `net_private` grant (the manifest's permission plus the operator's `allow_private_hosts`). A recipe that reaches a private host
+  passes here and still needs the grant in a real Surveyor.
 
 ### Conformance checks
 
@@ -349,15 +358,17 @@ with the reason); the steps of the scenario print as `step N <verb>`.
 | Check | What it holds the recipe to |
 |---|---|
 | `spec` | spec is valid, declares `spec`, `check` and `list`, and its `env` and `settings` are within what the manifest declares |
-| `parser` | no verb call ended in `protocol_error`: every output line passes the production parser and its caps |
-| `entries` | keys are unique, a feed entry has a revision, `change` is `added` or `modified` |
+| `parser` | no verb call (the steps and the automatic calls alike) ended in a `protocol_error` other than the entry and system rules below: every output line passes the production parser and its caps |
+| `entries` | the production parser accepted every listing's entries: keys present and unique, a feed entry has a title and a revision, `change` is `added` or `modified` (the check reads the parser's `protocol_error`, it does not judge the entries again) |
 | `repeatable` | listing twice with the same cursor and fixtures gives the same entries and cursor |
 | `incremental` | a listing from the returned cursor does not re-emit an entry whose revision did not change (needs a list step with `cursor: "@next"`; skipped otherwise) |
-| `system` | a system recipe's `check` answers `read_only`, and its list ends with an empty cursor and has no deletes |
+| `system` | a system recipe's `check` answers `read_only`, and the parser accepted its list: it ends with an empty cursor and has no deletes |
 | `fetch` | `fetch` answers every key it is asked (skipped when it is not declared or every entry came with content) |
 | `protocol` | an exec script exits 64 with no output on an unknown verb and on another protocol number (skipped for a Starlark recipe) |
 | `secrets` | no `env` test value of 4 bytes or more appears in an entry, a content or an error detail |
 | `connector` | a stdio connector starts, offers every tool of its allowlist within the schema and name caps, answers its calls capped, and leaks no `env` test value; the calls print as `call N <tool>` |
+
+`examples/plugin-recipe` is a Starlark recipe with a recorded scenario that passes every check that applies to it (it is run by a Go test): copy it as a starting point.
 
 The list lives in `recipetest.Checks` and a test compares it with this table by name, so a check is documented in the
 change that adds it.
@@ -390,7 +401,7 @@ branding whose accent cannot be shown stops the start naming the plugin and the 
 |---|---|
 | `plugin new <name> [<dir>]` | Scaffolds a plugin: manifest (schema 2, version 0.1.0, `cartographer: ">=<running>"`, never below 0.29.0, `components.client.sdk.artifacts: 1`), a README and one example skill. It checks the name with the manifest rules (and the names of the commands) and the scaffold with `ReadTree` before writing, and refuses a non-empty `<dir>` (default `./<name>`). A point other than `skills/` gets no folder: git does not keep an empty one, and a `.gitkeep` in a point is a file the reader refuses. |
 | `plugin validate <dir>` | Runs `ReadTree` on the folder as it is, offline, storing nothing, and lists **every** problem as `path: reason`. Exit 0 clean, 1 with problems, 2 on usage. Run it before pushing. |
-| `plugin test <dir> [--recipe <name>] [--connector <name>]` | Runs the recipes and connectors of a plugin's surveyor side against `tests/<name>.yaml` and the conformance checks, offline ([above](#testing-a-surveyor-side-plugin-test)). Exit 0 all passed, 1 a check failed, 2 it could not run. |
+| `plugin test <dir> [--recipe <name>] [--connector <name>] [--output table\|json]` | Runs the recipes and connectors of a plugin's surveyor side against `tests/<name>.yaml` and the conformance checks ([above](#testing-a-surveyor-side-plugin-test)). A Starlark recipe replays recordings; **an exec recipe's command runs as you, unapproved, with your network**, and is printed first. Exit 0 all passed, 1 a check failed, 2 it could not run. |
 | `plugin install <git-url>[@<ref>] \| <folder> [--yes]` | Acquires, validates, stores and records the plugin as `installed`, then prints the preview and asks `Enable <name> <version>? [y/N]` on a terminal. `y` or `--yes` sets `approved` to `installed` and `enabled`. Before asking it prints the content of what runs (hook scripts, `hook.json`, frontmatter that declares commands). Otherwise it stays pending (exit 0, last line `pending approval: run cartographer plugin install <arg> again on a terminal, or with --yes`); a declined update keeps the approved version active. A name installed from another source is refused with exit 2 and nothing written; the same source is an update and keeps the approval. |
 | `plugin vendor <git-url>[@<ref>] \| <folder> --to <dir> [--side <side>]` | Fills a pinned store: fetches like `install`, validates every side (a tree with problems is refused, nothing is stored), stores it under `<dir>/<name>/<digest>/`, prints the preview of each side the tree has (`--side` limits it to one), the digest and, for each headless side, the `plugins_dir` and `plugins.<name>.digest` lines to put in that component's config. A client side gets a note instead: it is approved with `install`. It writes neither `.cartographer.yaml` nor any approval and takes no client lock. |
 | `plugin list` | One row per configured plugin: version, `State`, short digest, redacted source, contributions per point, `update available` when `installed` differs from a non-empty `approved`. |
