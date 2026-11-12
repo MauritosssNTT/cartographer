@@ -799,6 +799,17 @@ func heldAgentReason(a contract.Artifact) string {
 	return ""
 }
 
+// kbAgentIssuePrefix is the manifest-issue prefix for a KB's agent, and false
+// for anything else: an agent of the bundle or of a plugin has no KB whose
+// sync_pull could report an issue about it.
+func kbAgentIssuePrefix(kind, source, name string) (string, bool) {
+	kbName, ok := strings.CutPrefix(source, "kb:")
+	if !ok || kind != "agent" {
+		return "", false
+	}
+	return contract.AgentFrontmatterIssuePrefix(kbName, name), true
+}
+
 // statusIssues splits the manifest issues for status. An issue about an agent
 // the snapshot shows as held (HeldReason) is dropped: the agent is listed with
 // its reason, so naming it again would repeat it. An issue about an agent that
@@ -811,16 +822,18 @@ func statusIssues(manifests map[string]contract.Manifest, shown []providerStatus
 	var held []string
 	for _, p := range shown {
 		for _, a := range append(append([]statusArtifact(nil), p.Added...), p.Updated...) {
-			if a.Kind == "agent" && a.HeldReason != "" && strings.HasPrefix(a.Source, "kb:") {
-				held = append(held, contract.AgentFrontmatterIssuePrefix(strings.TrimPrefix(a.Source, "kb:"), a.Name))
+			if a.HeldReason != "" {
+				if prefix, ok := kbAgentIssuePrefix(a.Kind, a.Source, a.Name); ok {
+					held = append(held, prefix)
+				}
 			}
 		}
 	}
 	var listed []string
 	for _, m := range manifests {
 		for _, a := range m.Artifacts {
-			if a.Kind == "agent" && strings.HasPrefix(a.Source, "kb:") {
-				listed = append(listed, contract.AgentFrontmatterIssuePrefix(strings.TrimPrefix(a.Source, "kb:"), a.Name))
+			if prefix, ok := kbAgentIssuePrefix(a.Kind, a.Source, a.Name); ok {
+				listed = append(listed, prefix)
 			}
 		}
 	}
