@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -33,7 +34,8 @@ recipe("wiki", lst)
 	req := recipes.Request{Recipe: "wiki", Verb: "list", Body: []byte(`{}`), Plugin: "acme",
 		Permissions: perms, PrivateHosts: grant,
 		Seams: &startest.Seams{Net: &startest.NetSeams{
-			TLS: tlsCfg,
+			TLS:   tlsCfg,
+			Proxy: func(*http.Request) (*url.URL, error) { return nil, nil }, // never the environment's
 			Lookup: func(context.Context, string) ([]netip.Addr, error) {
 				return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 			},
@@ -78,9 +80,11 @@ func TestPrivateGrantNeedsBothKeys(t *testing.T) {
 	denied(t, privateCall(t, srv, "wiki.example.com", "/", &core.Permissions{Net: []string{"api.example.org"}, NetPrivate: []string{"wiki.example.com"}}, []string{"wiki.example.com"}), "permissions.net")
 }
 
-// The grant opens private, loopback and link-local unicast addresses only.
+// The grant opens private and loopback addresses only: link-local (where cloud
+// metadata lives), a metadata address inside a private range and the other
+// reserved ranges stay shut.
 func TestPrivateGrantKeepsTheOtherRangesShut(t *testing.T) {
-	for _, ip := range []string{"224.0.0.1", "0.0.0.0", "100.64.0.1", "198.18.0.1"} {
+	for _, ip := range []string{"169.254.169.254", "fe80::1", "fd00:ec2::254", "64:ff9b::a9fe:a9fe", "224.0.0.1", "0.0.0.0", "100.64.0.1", "198.18.0.1"} {
 		p := load(t, `
 def lst(r):
     http.request("GET", "https://wiki.example.com/")
@@ -97,4 +101,40 @@ recipe("wiki", lst)
 			}}})
 		denied(t, err, "the private grant does not open")
 	}
+}
+
+// Behind a proxy the target is resolved and judged by the same two keys: with
+// both the request goes on to the proxy, with one it is refused before it.
+func TestPrivateGrantBehindAProxy(t *testing.T) {
+	p := load(t, `
+def lst(r):
+    http.request("GET", "https://wiki.example.com/")
+    return {"next_cursor": ""}
+recipe("wiki", lst)
+`)
+	// A proxy nobody listens on: reaching it is a plain failure, not a denial.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := &url.URL{Scheme: "http", Host: ln.Addr().String()}
+	ln.Close()
+	call := func(perms *core.Permissions, grant []string) error {
+		_, err := p.Call(context.Background(), recipes.Request{Recipe: "wiki", Verb: "list", Body: []byte(`{}`), Plugin: "acme",
+			Permissions: perms, PrivateHosts: grant,
+			Seams: &startest.Seams{Net: &startest.NetSeams{
+				Lookup: func(context.Context, string) ([]netip.Addr, error) {
+					return []netip.Addr{netip.MustParseAddr("10.0.0.5")}, nil
+				},
+				Proxy: func(*http.Request) (*url.URL, error) { return proxy, nil },
+			}}})
+		return err
+	}
+	declared := &core.Permissions{Net: []string{"wiki.example.com"}, NetPrivate: []string{"wiki.example.com"}}
+	var ce *starcore.CallError
+	if err := call(declared, []string{"wiki.example.com"}); !errors.As(err, &ce) || ce.Kind != starcore.Failed {
+		t.Errorf("both keys: want the proxy reached (a failed call), got %v", err)
+	}
+	denied(t, call(declared, nil), "plugins.acme.allow_private_hosts")
+	denied(t, call(&core.Permissions{Net: []string{"wiki.example.com"}}, []string{"wiki.example.com"}), "may not reach")
 }

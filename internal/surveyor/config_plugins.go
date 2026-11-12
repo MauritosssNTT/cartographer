@@ -30,8 +30,8 @@ type PluginPin struct {
 	// a plugin never names an operator variable itself.
 	Env map[string]string
 	// AllowPrivateHosts are the hosts of the manifest's net_private this
-	// Surveyor lets a Starlark recipe reach on a private, loopback or
-	// link-local address. Each must be declared there (addPluginPoints checks).
+	// Surveyor lets a Starlark recipe reach on a private or loopback
+	// address. Each must be declared there (addPluginPoints checks).
 	AllowPrivateHosts []string
 	// Line is the line of the entry in the file, for a refusal at start.
 	Line int

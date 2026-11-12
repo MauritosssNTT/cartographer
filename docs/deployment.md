@@ -808,7 +808,7 @@ maps each variable name the plugin's manifest declares under `permissions.env` t
 connectors (`<plugin>/<name>`, `docs/plugins.md` §Surveyor side) then run with only those variables plus `PATH` and `HOME`.
 `plugins.<name>.allow_private_hosts` (exact host names, at most 16) is the Surveyor's half of the private-network
 grant: a host listed there and under the manifest's `components.surveyor.permissions.net_private` may resolve to a
-private, loopback or link-local address for the plugin's Starlark recipes. A host the manifest does not declare stops
+private or loopback address (never link-local or a cloud metadata address) for the plugin's Starlark recipes. A host the manifest does not declare stops
 the start, naming both keys; a declared host left out stays refused. Exec recipes and MCP connector processes are not
 held by it (`docs/plugins.md` §Network and environment for scripts).
 

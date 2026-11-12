@@ -110,7 +110,7 @@ type Permissions struct {
 	Files *Files   `yaml:"files"`
 	Env   []string `yaml:"env"`
 	// NetPrivate (surveyor side only) names exact hosts of net that may resolve
-	// to a private, loopback or link-local address. It grants nothing alone:
+	// to a private or loopback address. It grants nothing alone:
 	// the Surveyor config must list the same host under allow_private_hosts.
 	NetPrivate []string `yaml:"net_private"`
 }

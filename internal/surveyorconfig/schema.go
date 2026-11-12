@@ -143,7 +143,7 @@ var Schema = settingschema.Schema{Keys: []settingschema.Key{
 	{Path: "plugins.{name}.settings", Scope: settingschema.ScopeSurveyor, Type: "map", Default: "{}",
 		Description: "Scalar settings handed to the plugin, typed by the settings its manifest declares."},
 	{Path: "plugins.{name}.allow_private_hosts", Scope: settingschema.ScopeSurveyor, Type: "list", Values: "exact host names, at most 16", Default: "[]",
-		Description: "Hosts the plugin's Starlark recipes may reach on a private, loopback or link-local address. Each must be declared under the manifest's components.surveyor.permissions.net_private, or the start is refused; a host declared there and not listed here stays refused. Exec recipes and MCP connectors are not held by this grant."},
+		Description: "Hosts the plugin's Starlark recipes may reach on a private or loopback address (never link-local or a cloud metadata address). Each must be declared under the manifest's components.surveyor.permissions.net_private, or the start is refused; a host declared there and not listed here stays refused. Exec recipes and MCP connectors are not held by this grant."},
 
 	{Path: "tasks", Scope: settingschema.ScopeSurveyor, Type: "list", Default: "[]",
 		Example:     "- kind: ingest\n  model: cloud",

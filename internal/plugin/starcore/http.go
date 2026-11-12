@@ -300,13 +300,21 @@ func (n *netState) privateGranted(host string) bool {
 	return n.cc.Perms != nil && in(n.cc.Perms.NetPrivate) && in(n.private)
 }
 
-// privateReachable is an address a granted host may lead to: a private,
-// loopback or link-local unicast one, judged through an embedded IPv4 as
-// forbiddenAddr is. The grant never opens multicast, unspecified or the other
-// reserved ranges.
+// metadataAddrs are cloud metadata endpoints inside a private range (AWS's
+// IPv6 one is a unique local address); the grant never opens them.
+var metadataAddrs = []netip.Addr{netip.MustParseAddr("fd00:ec2::254")}
+
+// privateReachable is an address a granted host may lead to: a private or
+// loopback one, judged through an embedded IPv4 as forbiddenAddr is.
+// TRAP: link-local stays shut, because that is where cloud metadata lives
+// (169.254.169.254) and an internal service does not; so do multicast,
+// unspecified, carrier-grade NAT and the other reserved ranges.
 func privateReachable(a netip.Addr) bool {
 	a = embeddedV4(a)
-	return a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast()
+	if slices.Contains(metadataAddrs, a) {
+		return false
+	}
+	return a.IsLoopback() || a.IsPrivate()
 }
 
 // refusal is the error for host leading to a forbidden address. When the
@@ -315,7 +323,7 @@ func privateReachable(a netip.Addr) bool {
 func (n *netState) refusal(host string) error {
 	if n.cc.Perms != nil && slices.ContainsFunc(n.cc.Perms.NetPrivate, func(h string) bool { return strings.EqualFold(h, strings.TrimSuffix(host, ".")) }) {
 		if n.privateGranted(host) {
-			return DeniedErr("http.request: %q resolves to an address the private grant does not open (multicast, unspecified or reserved)", host)
+			return DeniedErr("http.request: %q resolves to an address the private grant does not open (link-local, cloud metadata, multicast, unspecified or reserved)", host)
 		}
 		return DeniedErr("http.request: %q resolves to a private address: the manifest declares it under net_private, but this Surveyor does not grant it (plugins.%s.allow_private_hosts)", host, n.cc.Plugin)
 	}
