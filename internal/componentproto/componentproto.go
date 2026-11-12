@@ -117,9 +117,10 @@ func CandidateKinds() []string {
 // The bounds of the candidates a runs report carries; the server applies the
 // same ones to what it keeps.
 const (
-	MaxCandidatesPerPost     = 16
-	MaxCandidatesPerSurveyor = 64
-	MaxCandidatesTotal       = 512
+	MaxCandidatesPerPost      = 16
+	MaxCandidatesPerSurveyor  = 64
+	MaxCandidatesPerPrincipal = 128
+	MaxCandidatesTotal        = 512
 )
 
 // Error codes of the family.

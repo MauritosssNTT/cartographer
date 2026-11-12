@@ -142,18 +142,50 @@ func (s *surveyorStore) mergeCandidatesLocked(b *runBook, cands []reportCandidat
 		}
 		b.evictSurveyorCandidates(c.Surveyor)
 	}
+	// The bounds are per principal first and then in all, and both take the
+	// holder's own oldest: a principal that posts many candidates under many
+	// Surveyor ids pushes out its own, never another principal's.
+	for p := range s.runs {
+		for s.principalCandidatesLocked(p) > componentproto.MaxCandidatesPerPrincipal {
+			s.evictOldestOfLocked(p)
+		}
+	}
 	for s.candidatesLocked() > componentproto.MaxCandidatesTotal {
-		var ob *runBook
-		oi := -1
-		for _, m := range s.runs {
-			for _, bk := range m {
-				for i := range bk.cands {
-					if oi < 0 || bk.cands[i].LastAt.Before(ob.cands[oi].LastAt) {
-						ob, oi = bk, i
-					}
-				}
+		s.evictOldestOfLocked(s.largestHolderLocked())
+	}
+}
+
+func (s *surveyorStore) principalCandidatesLocked(principal string) (n int) {
+	for _, b := range s.runs[principal] {
+		n += len(b.cands)
+	}
+	return n
+}
+
+// largestHolderLocked is the principal holding the most candidates (the
+// smaller id on a tie, so the choice is stable).
+func (s *surveyorStore) largestHolderLocked() string {
+	best, bestN := "", -1
+	for p := range s.runs {
+		if n := s.principalCandidatesLocked(p); n > bestN || (n == bestN && p < best) {
+			best, bestN = p, n
+		}
+	}
+	return best
+}
+
+// evictOldestOfLocked drops the principal's candidate with the oldest last sighting.
+func (s *surveyorStore) evictOldestOfLocked(principal string) {
+	var ob *runBook
+	oi := -1
+	for _, bk := range s.runs[principal] {
+		for i := range bk.cands {
+			if oi < 0 || bk.cands[i].LastAt.Before(ob.cands[oi].LastAt) {
+				ob, oi = bk, i
 			}
 		}
+	}
+	if ob != nil {
 		ob.cands = append(ob.cands[:oi], ob.cands[oi+1:]...)
 	}
 }

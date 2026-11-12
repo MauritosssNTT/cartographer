@@ -127,7 +127,7 @@ func TestFeedbackCandidates_VocabularyAndBoundsOfAPost(t *testing.T) {
 	}
 }
 
-func TestFeedbackCandidates_PerSurveyorAndTotalBoundsEvictTheOldest(t *testing.T) {
+func TestFeedbackCandidates_PerSurveyorBoundEvictsTheOldest(t *testing.T) {
 	t.Parallel()
 	s := &surveyorStore{}
 	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
@@ -153,26 +153,66 @@ func TestFeedbackCandidates_PerSurveyorAndTotalBoundsEvictTheOldest(t *testing.T
 			t.Fatalf("%s survived: the oldest sighting goes first", c.Code)
 		}
 	}
-	// In all: 512 across the books, again the oldest first, and the book just posted keeps its newest.
-	s.runs = map[string]map[string]*runBook{"p": {}}
-	for i := 0; i < componentproto.MaxCandidatesTotal/componentproto.MaxCandidatesPerSurveyor+3; i++ {
-		bk := &runBook{}
-		sv := fmt.Sprintf("w-%d", i)
+}
+
+// fillCandidates gives principal `surveyors` books of `per` candidates each, one Surveyor id per book.
+func (s *surveyorStore) fillCandidates(principal string, surveyors, per int, base time.Time) {
+	if s.runs == nil {
+		s.runs = map[string]map[string]*runBook{}
+	}
+	if s.runs[principal] == nil {
+		s.runs[principal] = map[string]*runBook{}
+	}
+	for i := 0; i < surveyors; i++ {
+		bk := s.runs[principal][fmt.Sprintf("per-%d", i)]
+		if bk == nil {
+			bk = &runBook{}
+			s.runs[principal][fmt.Sprintf("per-%d", i)] = bk
+		}
+		sv := fmt.Sprintf("%s-sv-%d", principal, i)
 		var batch []reportCandidate
-		for j := 0; j < componentproto.MaxCandidatesPerSurveyor; j++ {
-			c := mk(sv, i*1000+j)
+		for j := 0; j < per; j++ {
+			c := reportCandidate{Kind: "tool_error", Surveyor: sv, Code: fmt.Sprintf("c%d", j), Count: 1,
+				LastAt: base.Add(time.Duration(i*1000+j) * time.Second), FirstAt: base, principal: principal, perimeter: fmt.Sprintf("per-%d", i)}
+			c.ID = candidateID(principal, c.perimeter, c)
 			batch = append(batch, c)
 		}
-		s.runs["p"][fmt.Sprintf("per-%d", i)] = bk
 		s.mu.Lock()
 		s.mergeCandidatesLocked(bk, batch)
 		s.mu.Unlock()
 	}
+}
+
+func (s *surveyorStore) heldBy(principal string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.principalCandidatesLocked(principal)
+}
+
+// One principal cannot push another's candidates out: a principal posting under
+// many Surveyor ids is bounded to its own share, and the total bound takes from
+// the largest holder.
+func TestFeedbackCandidates_APrincipalCannotEvictAnothers(t *testing.T) {
+	t.Parallel()
+	s := &surveyorStore{}
+	old := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	s.fillCandidates("good", 1, 10, old) // the oldest sightings of all
+	s.fillCandidates("evil", 20, componentproto.MaxCandidatesPerSurveyor, old.Add(time.Hour))
+	if got := s.heldBy("evil"); got != componentproto.MaxCandidatesPerPrincipal {
+		t.Fatalf("evil holds %d, want its cap %d", got, componentproto.MaxCandidatesPerPrincipal)
+	}
+	if got := s.heldBy("good"); got != 10 {
+		t.Fatalf("good holds %d after another principal's flood, want 10", got)
+	}
+	// Fill the total with other principals: the newcomer's 10 survive, taken from the largest holders.
+	for _, p := range []string{"p1", "p2", "p3", "p4"} {
+		s.fillCandidates(p, 2, componentproto.MaxCandidatesPerSurveyor, old.Add(2*time.Hour))
+	}
 	s.mu.Lock()
 	n := s.candidatesLocked()
 	s.mu.Unlock()
-	if n != componentproto.MaxCandidatesTotal {
-		t.Fatalf("the store holds %d candidates, want %d", n, componentproto.MaxCandidatesTotal)
+	if n > componentproto.MaxCandidatesTotal || s.heldBy("good") != 10 {
+		t.Fatalf("total %d (max %d), good holds %d, want 10", n, componentproto.MaxCandidatesTotal, s.heldBy("good"))
 	}
 }
 
