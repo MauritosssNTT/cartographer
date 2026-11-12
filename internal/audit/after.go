@@ -67,7 +67,9 @@ func (l *Log) snapshotAfter() (afterSnapshot, error) {
 // after the cursor are gone (their segment was deleted by retention, known only
 // to the checkpoint index), or the cursor is not in the chain at all, gap is
 // true and the result starts at the first entry still retained after the
-// point it can place the cursor (the oldest retained one when it cannot).
+// point it can place the cursor: the end of a deleted segment whose first or
+// last hash it is, else the oldest retained entry. Placing it costs a read of
+// the retained segments up to the one that holds it.
 //
 // It never writes, and holds the append mutex only to snapshot the index and
 // the active file's size; the files are read after. A rotation that happens
@@ -83,6 +85,9 @@ func (l *Log) EventsAfter(cursor string, limit int) (events []Entry, gap bool, e
 			return nil, false, err
 		}
 		active, err := readPrefix(l.path, snap.size)
+		if errors.Is(err, errSegmentChanged) {
+			continue // the active file was replaced by a rotation meanwhile
+		}
 		if err != nil {
 			return nil, false, err
 		}
@@ -124,6 +129,9 @@ func eventsAfter(snap afterSnapshot, active []Entry, cursor string, limit int) (
 		}
 		return false
 	}
+	// read keeps each segment read before the cursor was placed, so a cursor
+	// that is nowhere replays from them without reading them again.
+	var read [][]Entry
 	for _, cp := range snap.segments {
 		entries, err := readSegment(filepath.Join(snap.dir, cp.Name), cp)
 		if err != nil {
@@ -131,10 +139,14 @@ func eventsAfter(snap afterSnapshot, active []Entry, cursor string, limit int) (
 		}
 		switch {
 		case !found && entries == nil:
+			// Deleted by retention: only its first and last hashes are known.
 			if cp.LastHash == cursor {
 				found = true
+			} else if cp.FirstHash == cursor {
+				found, gap = true, true
 			}
 		case !found:
+			read = append(read, entries)
 			if i := indexOfHash(entries, cursor); i >= 0 {
 				found = true
 				if take(entries[i+1:]) {
@@ -152,15 +164,11 @@ func eventsAfter(snap afterSnapshot, active []Entry, cursor string, limit int) (
 		}
 	}
 	if !found {
-		// The cursor is not in the retained chain: either its segment was
-		// deleted, or it is not a hash of this log. Replay from the oldest
-		// retained entry (at-least-once) and say so.
+		// The cursor is not in the retained chain: its segment was deleted,
+		// or it is not a hash of this log. Replay from the oldest retained
+		// entry (at least once) and say so.
 		out, gap = nil, true
-		for _, cp := range snap.segments {
-			entries, err := readSegment(filepath.Join(snap.dir, cp.Name), cp)
-			if err != nil {
-				return nil, false, err
-			}
+		for _, entries := range read {
 			if take(entries) {
 				return out, gap, nil
 			}
@@ -205,6 +213,11 @@ func readPrefix(path string, size int64) ([]Entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("audit: read %s: %w", path, err)
 	}
+	// An append writes whole lines under the mutex, so the snapshot's size
+	// ends a line: a cut elsewhere is another file (a rotation replaced it).
+	if int64(len(data)) < size || data[len(data)-1] != '\n' {
+		return nil, errSegmentChanged
+	}
 	var out []Entry
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
 		if len(bytes.TrimSpace(line)) == 0 {
@@ -212,7 +225,7 @@ func readPrefix(path string, size int64) ([]Entry, error) {
 		}
 		var e Entry
 		if err := json.Unmarshal(line, &e); err != nil {
-			return nil, fmt.Errorf("audit: parse %s: %w", path, err)
+			return nil, errSegmentChanged
 		}
 		out = append(out, e)
 	}

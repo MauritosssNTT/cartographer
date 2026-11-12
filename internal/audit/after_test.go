@@ -194,3 +194,55 @@ func TestEventsAfter_ConcurrentWithAppendsAndWake(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 }
+
+// A snapshot size that no longer ends a line (a rotation replaced the active
+// file between the snapshot and the read) is a changed segment, read again,
+// never a parse error.
+func TestReadPrefix_ACutLineIsAChangedSegment(t *testing.T) {
+	l, path := tempLog(t)
+	appendN := func(n int) {
+		for i := 0; i < n; i++ {
+			if err := appendOne(l, "tool"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	appendN(2)
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPrefix(path, fi.Size()); err != nil {
+		t.Fatalf("whole lines: %v", err)
+	}
+	if _, err := readPrefix(path, fi.Size()-5); err != errSegmentChanged {
+		t.Fatalf("a cut line: %v", err)
+	}
+	if _, err := readPrefix(path, fi.Size()+100); err != errSegmentChanged {
+		t.Fatalf("a shorter file: %v", err)
+	}
+}
+
+// The first hash of a deleted segment places the cursor at that segment's end.
+func TestEventsAfter_FirstHashOfADeletedSegment(t *testing.T) {
+	dir := t.TempDir()
+	archive := filepath.Join(dir, "archive")
+	l, err := OpenWithOptions(filepath.Join(dir, "audit.jsonl"), Options{MaxBytes: 600, ArchiveDir: archive})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	for i := 0; i < 10; i++ {
+		if err := appendOne(l, "tool"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gone := l.index.Segments[1]
+	if err := os.Remove(filepath.Join(archive, gone.Name)); err != nil {
+		t.Fatal(err)
+	}
+	es, gap, err := l.EventsAfter(gone.FirstHash, 1)
+	if err != nil || !gap || len(es) != 1 || es[0].PrevHash != gone.LastHash {
+		t.Fatalf("got %+v, gap %v, %v", es, gap, err)
+	}
+}
