@@ -2,15 +2,21 @@ import { test as base, expect, type Page } from "@playwright/test";
 
 const LOCAL = process.env.E2E_LOCAL_URL;
 const AUTH = process.env.E2E_AUTH_URL;
-if (!LOCAL || !AUTH) {
-  throw new Error("E2E_LOCAL_URL / E2E_AUTH_URL are unset: run the suite through `make e2e-web`.");
+const EXT = process.env.E2E_EXT_URL;
+const APP = process.env.E2E_APP_URL;
+if (!LOCAL || !AUTH || !EXT || !APP) {
+  throw new Error("E2E_LOCAL_URL / E2E_AUTH_URL / E2E_EXT_URL / E2E_APP_URL are unset: run the suite through `make e2e-web`.");
 }
 
 /** The auth-off server and the auth-on one (see e2e/run.sh). */
 export const LOCAL_URL: string = LOCAL;
 export const AUTH_URL: string = AUTH;
+/** The auth-on server with a pinned plugin (a view and an app), and the other origin that app lives on. */
+export const EXT_URL: string = EXT;
+export const APP_URL: string = APP;
 export const ADMIN_TOKEN = "e2e-admin-token";
 export const NARROW_TOKEN = "e2e-narrow-token";
+export const EXT_TOKEN = "e2e-ext-token";
 
 /**
  * Every test gets a page whose traffic is watched: any request to an origin
@@ -23,7 +29,9 @@ export const test = base.extend<{ foreign: string[]; consoleLines: string[] }>({
   foreign: [
     async ({ page }, use) => {
       const foreign: string[] = [];
-      const allowed = new Set([new URL(LOCAL_URL).origin, new URL(AUTH_URL).origin]);
+      // The app's origin is deliberately absent: the Atlas page must never
+      // contact it (the link opens it in a page of its own, which is not watched).
+      const allowed = new Set([LOCAL_URL, AUTH_URL, EXT_URL].map((u) => new URL(u).origin));
       page.on("request", (request) => {
         const url = request.url();
         if (url.startsWith("data:") || url.startsWith("blob:")) return;
@@ -82,9 +90,9 @@ export function selectedIn(id: string): RegExp {
   return new RegExp("concept=" + encodeURIComponent(id).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 }
 
-/** Opens the atlas on the auth-on server and signs in with token. */
-export async function signIn(page: Page, token: string, remember = false, path = "/ui/"): Promise<void> {
-  await page.goto(AUTH_URL + path);
+/** Opens the atlas on the auth-on server (or on `base`) and signs in with token. */
+export async function signIn(page: Page, token: string, remember = false, path = "/ui/", base = AUTH_URL): Promise<void> {
+  await page.goto(base + path);
   await page.getByLabel("Bearer token").fill(token);
   if (remember) await page.getByLabel("Remember for this tab").check();
   await page.getByRole("button", { name: "Open the atlas" }).click();
