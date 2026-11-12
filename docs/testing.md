@@ -790,7 +790,9 @@ of a relationship — the inspector lists every link.
   | Graph snapshot, ranking (warm) | 339 ms → 170 ms | 1.0 s → 0.68 s |
   | Revision poll (per open tab) | 196 ms → 0 ms | 674 ms → 0 ms |
   | `graph` response, 2,000 nodes | 567 KB → 69 KB gzip | 617 KB → 77 KB gzip |
-  | `lint` response | 1.3 MB (7,354 findings) → 225 KB, 14.6 KB gzip, first page | 1.3 MB (18,260 findings, first 5,000) → 232 KB, 13.3 KB gzip, first page |
+  | `lint`, one page of `limit=5000` (the Atlas's request; 5,000 findings of 7,354) | 1.31 MB, 51 KB gzip | n/a |
+  | `lint`, one page of `limit=5000` (5,000 findings of 18,260) | n/a | 1.33 MB, 63 KB gzip |
+  | `lint`, default page of 1,000 findings | 225 KB, 14.6 KB gzip | 232 KB, 13.3 KB gzip |
 
   The overview and graph routes still validate the link-graph cache once per
   request (an lstat of every concept file: a third of the CPU profile of the

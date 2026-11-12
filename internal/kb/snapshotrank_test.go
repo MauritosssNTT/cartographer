@@ -149,6 +149,27 @@ func TestGraphGenerationWithin_TrustsALastValidation(t *testing.T) {
 	}
 }
 
+// A write this server makes goes through WithGitLock and ends the trust in
+// the last validation: the poll that follows sees it inside the window.
+func TestGraphGenerationWithin_SeesAServerWriteAtOnce(t *testing.T) {
+	t.Parallel()
+	k := snapshotKB(t)
+	gen, err := k.GraphGenerationWithin(time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = k.WithGitLock(func() error {
+		page := "---\ntype: Note\n---\nWritten by a handler.\n"
+		return os.WriteFile(filepath.Join(k.DataRoot(), "infra", "handled.md"), []byte(page), 0o644)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, _ := k.GraphGenerationWithin(time.Hour); g == gen {
+		t.Fatal("the poll answered with the generation from before a server write")
+	}
+}
+
 // The catalog is the walk's facets from the cache: same entries in the same
 // order, and a warm call reads no file.
 func TestConceptCatalog_MatchesTheWalkAndReadsNothingWarm(t *testing.T) {

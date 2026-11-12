@@ -361,9 +361,10 @@ func (kb *KB) GraphGeneration() (uint64, error) {
 // validated the cache less than maxAge ago it returns that view's generation
 // without another walk of the concept files, so N tabs polling every few
 // seconds cost one lstat walk per maxAge, not N. Every other reader still
-// validates strictly (D241), and its validation counts as the last one: an
-// edit made through the server is therefore seen at once, and one made out of
-// band within maxAge.
+// validates strictly (D241), and its validation counts as the last one. A
+// write made through the server (WithGitLock) forgets the last validation, so
+// the next poll sees it at once; an edit made out of band is seen within
+// maxAge.
 func (kb *KB) GraphGenerationWithin(maxAge time.Duration) (uint64, error) {
 	kb.graphMu.Lock()
 	defer kb.graphMu.Unlock()
@@ -375,6 +376,17 @@ func (kb *KB) GraphGenerationWithin(maxAge time.Duration) (uint64, error) {
 		return 0, err
 	}
 	return v.generation, nil
+}
+
+// forgetGraphValidation makes the next GraphGenerationWithin validate: every
+// write goes through WithGitLock, which calls it when the write ends, so the
+// poll never answers with the generation from before a write this server made.
+func (kb *KB) forgetGraphValidation() {
+	kb.graphMu.Lock()
+	defer kb.graphMu.Unlock()
+	if kb.graph != nil {
+		kb.graph.validatedAt = time.Time{}
+	}
 }
 
 func (kb *KB) graphCacheLocked() *graphCache {
