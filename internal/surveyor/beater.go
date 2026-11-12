@@ -31,9 +31,9 @@ type BeatAPI interface {
 // post carries (the server keeps the same number).
 const maxRunHistory = 20
 
-// runsBackoffBeats is how many accepted beats go without a runs post after a
-// 4xx: ten beats of the default interval, so a server that lacks the route
-// costs about one POST every ten minutes.
+// runsBackoffBeats is how many accepted beats go without a runs post, or a
+// settings post, after a 4xx: ten beats of the default interval, so a server
+// that lacks the route costs about one POST every ten minutes.
 const runsBackoffBeats = 10
 
 // Beater is the Heartbeat and the IdleSource of a surveyor (D1259), both served by
@@ -56,7 +56,8 @@ type Beater struct {
 	Interval time.Duration // DefaultBeatInterval when zero
 	// Settings is the report posted after the first beat, whenever an answer
 	// says settings_wanted and whenever Sources reports a new generation; nil
-	// posts none.
+	// posts none. A 4xx backs the post off for runsBackoffBeats beats and it is
+	// tried again: no refusal disables the report for the life of the process.
 	Settings *surveyorconfig.Report
 	// Sources, when set, gives the report's sources each time it is posted and a
 	// generation that grows whenever one of them changed (a check ran: its age is
@@ -82,7 +83,9 @@ type Beater struct {
 	// 4xx; loggedRunsStatus is the status last logged, until a post succeeds.
 	runsSkip         int
 	loggedRunsStatus int
-	refused          bool // the server answered the settings report with a 4xx: not sent again
+	// settingsSkip and loggedSettingsStatus are the same for the settings report.
+	settingsSkip         int
+	loggedSettingsStatus int
 	// logged* keep a protocol complaint to once per distinct cause: the beat
 	// repeats every interval and a server may be upgraded under the Surveyor.
 	loggedRefusal [2]int // (protocol, min_protocol) of the last 426 logged
@@ -342,9 +345,13 @@ func (b *Beater) send() {
 	}
 	b.mu.Lock()
 	b.answer, b.answerAt = a, b.now()
-	posted, refused, gen := b.posted, b.refused, b.postedGen
+	posted, gen := b.posted, b.postedGen
+	skip := b.settingsSkip > 0
+	if skip && s.Run != StateStopped {
+		b.settingsSkip--
+	}
 	b.mu.Unlock()
-	post := b.Settings != nil && s.Run != StateStopped && !refused && (!posted || a.SettingsWanted || b.sourcesGen() != gen)
+	post := b.Settings != nil && s.Run != StateStopped && !skip && (!posted || a.SettingsWanted || b.sourcesGen() != gen)
 	if post {
 		b.postSettings()
 	}
@@ -381,11 +388,18 @@ func (b *Beater) postSettings() {
 	if err := b.API.ReportSurveyorSettings(rep, beatCallTimeout); err != nil {
 		var re *client.RemoteError
 		if errors.As(err, &re) && re.HTTPStatus >= 400 && re.HTTPStatus < 500 {
-			// A refusal would repeat on every beat, so it is logged once and not retried.
+			// An older server (404), one that refuses the protocol (426), one that
+			// holds no writable KB or no declaration of ours (404 after a restart):
+			// any of these may pass, so back off for a while and try again; the
+			// line is logged once per status, until a post succeeds.
 			b.mu.Lock()
-			b.refused = true
+			b.settingsSkip = runsBackoffBeats
+			first := b.loggedSettingsStatus != re.HTTPStatus
+			b.loggedSettingsStatus = re.HTTPStatus
 			b.mu.Unlock()
-			b.logf("surveyor: settings report refused (%v): not sent again", err)
+			if first {
+				b.logf("surveyor: settings report refused (%v): retried in %d beats", err, runsBackoffBeats)
+			}
 			return
 		}
 		b.logf("surveyor: settings report: %v", err)
@@ -393,6 +407,7 @@ func (b *Beater) postSettings() {
 	}
 	b.mu.Lock()
 	b.posted, b.postedGen = true, gen
+	b.settingsSkip, b.loggedSettingsStatus = 0, 0
 	b.mu.Unlock()
 }
 
