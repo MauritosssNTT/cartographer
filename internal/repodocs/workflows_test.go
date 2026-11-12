@@ -170,13 +170,16 @@ func TestWriteTokenCacheInput(t *testing.T) {
 // left on by default: film-check (a pull request, untrusted) turns it off, and
 // film.yml's render job turns it on only when the `trusted` output says main
 // (D1068). A setup-node step without `package-manager-cache` would restore and save
-// whatever the untrusted ref gets from the package.json auto-detection.
+// whatever the untrusted ref gets from the package.json auto-detection. The `cache`
+// input is pinned too: absent or empty in film-check, and exactly the `trusted`
+// expression in film.yml, so an unconditional `cache: npm` fails.
 func TestFilmJobsSetPackageManagerCache(t *testing.T) {
 	const trusted = "${{ steps.needed.outputs.trusted == 'true' }}"
 	wfs := loadWorkflows(t)
-	for _, c := range []struct{ file, job, want string }{
-		{"film-check.yml", "render", "false"},
-		{"film.yml", "render", trusted},
+	const cacheOnMain = "${{ steps.needed.outputs.trusted == 'true' && 'npm' || '' }}"
+	for _, c := range []struct{ file, job, want, wantCache string }{
+		{"film-check.yml", "render", "false", ""},
+		{"film.yml", "render", trusted, cacheOnMain},
 	} {
 		job, ok := wfs[c.file].Jobs[c.job]
 		if !ok {
@@ -188,6 +191,13 @@ func TestFilmJobsSetPackageManagerCache(t *testing.T) {
 				continue
 			}
 			nodes++
+			gotCache := ""
+			if cv := st.With["cache"]; cv != nil {
+				gotCache = fmt.Sprint(cv)
+			}
+			if gotCache != c.wantCache {
+				t.Errorf("%s job %s step %d: cache = %q, want %q (empty means the input is absent)", c.file, c.job, i+1, gotCache, c.wantCache)
+			}
 			v, has := st.With["package-manager-cache"]
 			if !has {
 				t.Errorf("%s job %s step %d: setup-node has no package-manager-cache (the automatic cache stays on for an untrusted ref)", c.file, c.job, i+1)
