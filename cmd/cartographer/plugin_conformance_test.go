@@ -214,6 +214,9 @@ func TestPluginTestSkipsAnHTTPConnector(t *testing.T) {
 	if code, _ := runPlugin(t, "test", dir, "--recipe", "pages"); code != 2 {
 		t.Errorf("a recipe the plugin lacks: exit %d", code)
 	}
+	if code, out := runPlugin(t, "test", dir, "--recipe", "pages", "--connector", "pages"); code != 2 {
+		t.Errorf("--recipe with --connector: exit %d\n%s", code, out)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "tests", "pages.yaml"), []byte("steps:\n  - verb: list\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -225,6 +228,9 @@ func TestPluginTestSkipsAnHTTPConnector(t *testing.T) {
 // An exec recipe is a program of the folder started as the user: its command is
 // printed, escaped, before it runs.
 func TestExecAnnouncementNamesTheCommandEscaped(t *testing.T) {
+	if got := announcement("connector", "wiki", "/store/p/mcp", []string{"serve"}); !strings.Contains(got, "connector wiki") || !strings.Contains(got, "/store/p/mcp serve") {
+		t.Errorf("%q", got)
+	}
 	line := execAnnouncement("lister", &recipe.ExecConfig{Command: "/store/p/run.sh", Args: []string{"--all", "a\x1b[2Jb"}})
 	if !strings.Contains(line, "/store/p/run.sh --all") || strings.ContainsRune(line, 0x1b) || !strings.Contains(line, "unapproved") {
 		t.Errorf("%q", line)

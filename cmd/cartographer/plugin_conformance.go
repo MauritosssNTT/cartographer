@@ -23,10 +23,11 @@ const pluginTestEnvPrefix = "CARTOGRAPHER_PLUGIN_TEST_"
 // pluginTest runs the recipes and connectors of a plugin folder against their scenarios
 // (tests/<name>.yaml) and the conformance checks. It needs no server, token or
 // model. A Starlark recipe runs in process and its http.request is answered from
-// the recordings, so it touches no network; an exec recipe is a child process
-// that RUNS AS THE USER, unapproved and with the user's network, so each command
-// is printed on stderr before it runs. Exit 0 all passed, 1 a check failed, 2 it
-// could not run.
+// the recordings, so it touches no network; an exec recipe and a stdio connector
+// are child processes that RUN AS THE USER, unapproved and with the user's
+// network, so each command is printed on stderr before it runs. --recipe and
+// --connector each narrow the run to one target and cannot be given together.
+// Exit 0 all passed, 1 a check failed, 2 it could not run.
 func pluginTest(args []string) int {
 	output, args, err := outputFlag(args)
 	var only, onlyConn string
@@ -48,6 +49,9 @@ func pluginTest(args []string) int {
 	pos, _, ok := pluginArgs(rest)
 	if err != nil || !ok || len(pos) != 1 {
 		return pluginFail(2, "%s", pluginUsage)
+	}
+	if only != "" && onlyConn != "" {
+		return pluginFail(2, "--recipe and --connector each pick the one target to test: give one of them, or neither to test every recipe and connector")
 	}
 	if fi, err := os.Stat(pos[0]); err != nil || !fi.IsDir() {
 		return pluginFail(2, "%s is not a folder", pos[0])
@@ -166,6 +170,9 @@ func testTargets(p *core.Plugin, root, onlyRecipe, onlyConn string) ([]recipetes
 		if i < 0 {
 			return nil, fmt.Errorf("connector %s: the Surveyor loader did not build it", ct.Name)
 		}
+		if cfg.Connectors[i].Transport == connector.TransportStdio {
+			fmt.Fprintln(os.Stderr, announcement("connector", ct.Name, cfg.Connectors[i].Command, cfg.Connectors[i].Args))
+		}
 		results = append(results, recipetest.RunConnector(context.Background(), recipetest.ConnectorInput{Name: ct.Name, Config: cfg.Connectors[i], Env: env, Scenario: sc})...)
 	}
 	if !found {
@@ -181,9 +188,14 @@ func testTargets(p *core.Plugin, root, onlyRecipe, onlyConn string) ([]recipetes
 // a program of the folder, started as the user without the approval an install
 // asks for, so the author sees what is about to run. Escaped like the preview.
 func execAnnouncement(name string, c *recipe.ExecConfig) string {
-	argv := make([]string, 0, 1+len(c.Args))
-	for _, a := range append([]string{c.Command}, c.Args...) {
+	return announcement("recipe", name, c.Command, c.Args)
+}
+
+// announcement words the line for a recipe's command or a stdio connector's.
+func announcement(kind, name, command string, args []string) string {
+	argv := make([]string, 0, 1+len(args))
+	for _, a := range append([]string{command}, args...) {
 		argv = append(argv, escapeControl(a))
 	}
-	return fmt.Sprintf("running %s as you, unapproved: %s", escapeControl(name), strings.Join(argv, " "))
+	return fmt.Sprintf("running %s %s as you, unapproved: %s", kind, escapeControl(name), strings.Join(argv, " "))
 }

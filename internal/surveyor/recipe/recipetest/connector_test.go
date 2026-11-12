@@ -17,8 +17,10 @@ type pageArgs struct {
 
 type noArgs struct{}
 
-// mcpHelper is a stdio MCP server with three tools: read, write and env (which
-// prints the environment the connector gave the process).
+// mcpHelper is a stdio MCP server with five tools: read, write and env (which
+// prints the environment the connector gave the process), big (an input schema
+// over the cap the Surveyor's connector set enforces) and bad.name (a name the
+// model providers refuse).
 func mcpHelper() *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "fake", Version: "1"}, nil)
 	text := func(s string) *mcp.CallToolResult {
@@ -32,6 +34,14 @@ func mcpHelper() *mcp.Server {
 	})
 	mcp.AddTool(srv, &mcp.Tool{Name: "env", Description: "environment"}, func(ctx context.Context, r *mcp.CallToolRequest, in noArgs) (*mcp.CallToolResult, any, error) {
 		return text(strings.Join(os.Environ(), "\n")), nil, nil
+	})
+	srv.AddTool(&mcp.Tool{Name: "big", Description: "oversize schema", InputSchema: map[string]any{"type": "object",
+		"properties": map[string]any{"q": map[string]any{"type": "string", "description": strings.Repeat("x", 9<<10)}}}},
+		func(ctx context.Context, r *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return text("big"), nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: "bad.name", Description: "a dot"}, func(ctx context.Context, r *mcp.CallToolRequest, in noArgs) (*mcp.CallToolResult, any, error) {
+		return text("dot"), nil, nil
 	})
 	return srv
 }
@@ -89,6 +99,19 @@ func TestEveryConnectorProblemIsNamed(t *testing.T) {
 			sc.Env["WIKI_TOKEN"] = "tok-secret-value"
 			return connectorInput(t, "acme/wiki", []string{"env"}, sc)
 		}, "connector", "the value of WIKI_TOKEN appears in a call result"},
+		"schema over the cap": {func(t *testing.T) ConnectorInput {
+			return connectorInput(t, "acme/wiki", []string{"read", "big"}, calls(Call{Tool: "read", Args: map[string]any{"id": "1"}}))
+		}, "connector", "tool big is in the allowlist but is not offered: surveyor: connector acme/wiki: tool big not offered: its input schema is over"},
+		"a name the providers refuse": {func(t *testing.T) ConnectorInput {
+			return connectorInput(t, "acme/wiki", []string{"read", "bad.name"}, calls(Call{Tool: "read", Args: map[string]any{"id": "1"}}))
+		}, "connector", `the offered tool name "acme--wiki__bad.name" is not valid`},
+		"a secret in a start error": {func(t *testing.T) ConnectorInput {
+			sc := calls(Call{Tool: "read"})
+			sc.Env["WIKI_TOKEN"] = "tok-secret-value"
+			in := connectorInput(t, "acme/wiki", []string{"read"}, sc)
+			in.Config.Command = os.Args[0] + "-missing-tok-secret-value"
+			return in
+		}, "connector", "the value of WIKI_TOKEN appears in"},
 		"does not start": {func(t *testing.T) ConnectorInput {
 			in := connectorInput(t, "acme/wiki", []string{"read"}, calls(Call{Tool: "read"}))
 			in.Config.Command = os.Args[0] + "-missing"
@@ -109,11 +132,33 @@ func TestEveryConnectorProblemIsNamed(t *testing.T) {
 	}
 }
 
-func TestAnHTTPConnectorIsSkipped(t *testing.T) {
-	in := connectorInput(t, "acme/wiki", []string{"read"}, calls(Call{Tool: "read"}))
+// The child sees the variables the descriptor lists and nothing else: a variable
+// of the parent is not among them (the env tool prints what the child has).
+func TestTheChildSeesOnlyTheListedVariables(t *testing.T) {
+	t.Setenv("CONNECTOR_TEST_PARENT_ONLY", "parent-only-value-9")
+	sc := calls(Call{Tool: "env", ExpectTextContains: "WIKI_TOKEN="})
+	sc.Env["PARENT_ONLY"] = "parent-only-value-9" // watched: the verdict names it if the child printed it
+	res := RunConnector(context.Background(), connectorInput(t, "acme/wiki", []string{"env"}, sc))
+	for _, r := range res {
+		if r.Check == "call 1 env" && r.Status != Pass {
+			t.Errorf("the listed variable is not in the child: %+v", r)
+		}
+		if r.Check == "connector" && (strings.Contains(r.Detail, "PARENT_ONLY") || !strings.Contains(r.Detail, "WIKI_TOKEN")) {
+			t.Errorf("the verdict should name the listed WIKI_TOKEN only: %+v", r)
+		}
+	}
+}
+
+// An http connector is skipped, but its calls are still held to the allowlist: a
+// scenario that calls a tool the descriptor does not list is wrong whatever the server is.
+func TestAnHTTPConnectorIsSkippedButItsCallsAreChecked(t *testing.T) {
+	in := connectorInput(t, "acme/wiki", []string{"read"}, calls(Call{Tool: "read"}, Call{Tool: "write"}, Call{Tool: "write", ExpectError: true}))
 	in.Config.Transport = connector.TransportHTTP
 	res := RunConnector(context.Background(), in)
-	if len(res) != 1 || res[0].Status != Skip || !strings.Contains(res[0].Detail, "live server") {
+	if len(res) != 4 || res[0].Status != Skip || !strings.Contains(res[0].Detail, "live server") {
+		t.Fatalf("%+v", res)
+	}
+	if res[1].Status != Skip || res[2].Status != Fail || !strings.Contains(res[2].Detail, "allowlist") || res[3].Status != Skip {
 		t.Errorf("%+v", res)
 	}
 }
