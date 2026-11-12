@@ -100,23 +100,65 @@ func TestGlobalIdentNeverCarriesAPerFolderIdentity(t *testing.T) {
 	home := isolateGitIdentity(t)
 	t.Setenv("GIT_CONFIG_GLOBAL", "")
 	os.Unsetenv("GIT_CONFIG_GLOBAL")
-	included := filepath.ToSlash(filepath.Join(home, "id.gitconfig"))
-	if err := os.WriteFile(included, []byte("[user]\n\tname = Included Person\n\temail = inc@example.test\n"), 0o600); err != nil {
-		t.Fatal(err)
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	slash := func(name string) string { return filepath.ToSlash(filepath.Join(home, name)) }
+	const person = "[user]\n\tname = Home Person\n\temail = home@example.test\n"
+	const homePerson = "Home Person <home@example.test>"
+	included := slash("id.gitconfig")
+	write(included, "[user]\n\tname = Included Person\n\temail = inc@example.test\n")
+	// An included file that changes how git connects, never who it names.
+	sshOnly := slash("ssh.gitconfig")
+	write(sshOnly, "[core]\n\tsshCommand = ssh -i /key\n")
+	authorOnly := slash("author.gitconfig")
+	write(authorOnly, "[author]\n\temail = author@example.test\n")
+	nestedCond := slash("nested-cond.gitconfig")
+	write(nestedCond, "[includeIf \"gitdir:~/deeper/\"]\n\tpath = "+sshOnly+"\n")
+	nestedUncond := slash("nested-uncond.gitconfig")
+	write(nestedUncond, "[include]\n\tpath = "+included+"\n")
+	cond := func(condition, path string) string {
+		return "[includeIf \"" + condition + "\"]\n\tpath = " + path + "\n"
 	}
 	for _, tc := range []struct {
-		name, global, want string
-		perFolder          bool
+		name, global, xdg, want string
+		perFolder               bool
 	}{
-		{"plain", "[user]\n\tname = Home Person\n\temail = home@example.test\n", "Home Person <home@example.test>", false},
-		{"unconditional include", "[include]\n\tpath = " + included + "\n", "Included Person <inc@example.test>", false},
-		{"includeIf", "[user]\n\tname = Home Person\n\temail = home@example.test\n[includeIf \"gitdir:~/work/\"]\n\tpath = " + included + "\n", "", true},
-		{"name only", "[user]\n\tname = Home Person\n", "", false},
-		{"invalid", "[user]\n\tname = Home <Person>\n\temail = home@example.test\n", "", false},
-		{"none", "", "", false},
+		{"plain", person, "", homePerson, false},
+		{"unconditional include", "[include]\n\tpath = " + included + "\n", "", "Included Person <inc@example.test>", false},
+		{"includeIf", person + cond("gitdir:~/work/", included), "", "", true},
+		{"includeIf with no user set", person + cond("gitdir:~/work/", sshOnly), "", homePerson, false},
+		{"includeIf with no user set, ~ path", person + cond("gitdir:~/work/", "~/ssh.gitconfig"), "", homePerson, false},
+		{"includeIf with no user set, relative path", person + cond("gitdir:~/work/", "ssh.gitconfig"), "", homePerson, false},
+		{"includeIf with no user set, space in the condition", person + cond("gitdir:~/my work/", sshOnly), "", homePerson, false},
+		{"includeIf with a user set, space in the condition", person + cond("gitdir:~/my work/", included), "", "", true},
+		{"includeIf setting only author.email", person + cond("gitdir:~/work/", authorOnly), "", "", true},
+		{"includeIf to a missing file", person + cond("gitdir:~/work/", slash("missing.gitconfig")), "", "", true},
+		{"includeIf to a file that includes a user", person + cond("gitdir:~/work/", nestedUncond), "", "", true},
+		{"includeIf to a file with an includeIf", person + cond("gitdir:~/work/", nestedCond), "", "", true},
+		{"includeIf key that is not a path", person + "[includeIf \"gitdir:~/work/\"]\n\tsomething = else\n", "", "", true},
+		{"one harmless and one identity", person + cond("gitdir:~/a/", sshOnly) + cond("gitdir:~/b/", included), "", "", true},
+		{"includeIf in the XDG file, no user set", "", person + cond("gitdir:~/work/", sshOnly), homePerson, false},
+		{"includeIf in the XDG file, a user set", "", person + cond("gitdir:~/work/", included), "", true},
+		{"name only", "[user]\n\tname = Home Person\n", "", "", false},
+		{"invalid", "[user]\n\tname = Home <Person>\n\temail = home@example.test\n", "", "", false},
+		{"none", "", "", "", false},
 	} {
-		if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(tc.global), 0o600); err != nil {
-			t.Fatal(err)
+		// git config --global reads ~/.gitconfig, or the XDG file when there is
+		// none: a test of the XDG file leaves ~/.gitconfig out.
+		gitconfig, xdg := filepath.Join(home, ".gitconfig"), filepath.Join(home, "git", "config")
+		os.Remove(gitconfig)
+		os.Remove(xdg)
+		if tc.xdg != "" {
+			write(xdg, tc.xdg)
+		} else {
+			write(gitconfig, tc.global)
 		}
 		t.Setenv("GIT_AUTHOR_NAME", "Process Person")
 		t.Setenv("GIT_AUTHOR_EMAIL", "process@example.test")
