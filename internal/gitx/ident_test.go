@@ -2,10 +2,13 @@ package gitx
 
 import (
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestWorkTreeIdentFollowsTheRepository: the identity is the one git applies
@@ -126,7 +129,19 @@ func TestGlobalIdentNeverCarriesAPerFolderIdentity(t *testing.T) {
 	cond := func(condition, path string) string {
 		return "[includeIf \"" + condition + "\"]\n\tpath = " + path + "\n"
 	}
-	for _, tc := range []struct {
+	// A relative includeIf path lives in a file included from another directory
+	// and resolves against that file's directory, never the global file's: the
+	// same name sits in both, one harmless and one setting a user.
+	write(filepath.Join(home, "rel.gitconfig"), "[user]\n\temail = decoy@example.test\n")
+	write(filepath.Join(home, "harmless", "rel.gitconfig"), "[core]\n\tsshCommand = ssh -i /key\n")
+	write(filepath.Join(home, "harmless", "inc.gitconfig"), cond("gitdir:~/work/", "rel.gitconfig"))
+	write(filepath.Join(home, "setter", "rel.gitconfig"), "[user]\n\temail = inc@example.test\n")
+	write(filepath.Join(home, "setter", "inc.gitconfig"), cond("gitdir:~/work/", "rel.gitconfig"))
+	// The include path names a directory.
+	if err := os.MkdirAll(filepath.Join(home, "adir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
 		name, global, xdg, want string
 		perFolder               bool
 	}{
@@ -139,6 +154,11 @@ func TestGlobalIdentNeverCarriesAPerFolderIdentity(t *testing.T) {
 		{"includeIf with no user set, space in the condition", person + cond("gitdir:~/my work/", sshOnly), "", homePerson, false},
 		{"includeIf with a user set, space in the condition", person + cond("gitdir:~/my work/", included), "", "", true},
 		{"includeIf setting only author.email", person + cond("gitdir:~/work/", authorOnly), "", "", true},
+		{"includeIf relative path in a file included from another directory, harmless there",
+			person + "[include]\n\tpath = " + slash("harmless/inc.gitconfig") + "\n", "", homePerson, false},
+		{"includeIf relative path in a file included from another directory, sets a user there",
+			person + "[include]\n\tpath = " + slash("setter/inc.gitconfig") + "\n", "", "", true},
+		{"includeIf to a directory", person + cond("gitdir:~/work/", slash("adir")), "", "", true},
 		{"includeIf to a missing file", person + cond("gitdir:~/work/", slash("missing.gitconfig")), "", "", true},
 		{"includeIf to a file that includes a user", person + cond("gitdir:~/work/", nestedUncond), "", "", true},
 		{"includeIf to a file with an includeIf", person + cond("gitdir:~/work/", nestedCond), "", "", true},
@@ -149,7 +169,21 @@ func TestGlobalIdentNeverCarriesAPerFolderIdentity(t *testing.T) {
 		{"name only", "[user]\n\tname = Home Person\n", "", "", false},
 		{"invalid", "[user]\n\tname = Home <Person>\n\temail = home@example.test\n", "", "", false},
 		{"none", "", "", "", false},
-	} {
+	}
+	// A file git cannot read exits 1 as a file with nothing to find does.
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		unreadable := filepath.Join(home, "unreadable.gitconfig")
+		write(unreadable, "[user]\n\temail = hidden@example.test\n")
+		if err := os.Chmod(unreadable, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(unreadable, 0o600) })
+		cases = append(cases, struct {
+			name, global, xdg, want string
+			perFolder               bool
+		}{"includeIf to a file that cannot be read", person + cond("gitdir:~/work/", filepath.ToSlash(unreadable)), "", "", true})
+	}
+	for _, tc := range cases {
 		// git config --global reads ~/.gitconfig, or the XDG file when there is
 		// none: a test of the XDG file leaves ~/.gitconfig out.
 		gitconfig, xdg := filepath.Join(home, ".gitconfig"), filepath.Join(home, "git", "config")
@@ -165,5 +199,78 @@ func TestGlobalIdentNeverCarriesAPerFolderIdentity(t *testing.T) {
 		if got, perFolder := GlobalIdent(); got != tc.want || perFolder != tc.perFolder {
 			t.Errorf("%s: GlobalIdent() = %q, %v, want %q, %v", tc.name, got, perFolder, tc.want, tc.perFolder)
 		}
+	}
+}
+
+// TestResolveIncludePath: a relative include path is relative to the file that
+// includes it; on Windows a rooted path with no drive is not resolved at all.
+func TestResolveIncludePath(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.ToSlash(filepath.Join(dir, "sub", "main.gitconfig"))
+	if p, ok := resolveIncludePath(file, "rel.gitconfig"); !ok || p != filepath.Join(dir, "sub", "rel.gitconfig") {
+		t.Errorf("relative: got %q, %v", p, ok)
+	}
+	abs := filepath.ToSlash(filepath.Join(dir, "abs.gitconfig"))
+	if p, ok := resolveIncludePath(file, abs); !ok || p != filepath.Join(dir, "abs.gitconfig") {
+		t.Errorf("absolute: got %q, %v", p, ok)
+	}
+	if runtime.GOOS == "windows" {
+		for _, v := range []string{"/etc/work.gitconfig", `\x`, "/c/Users/user/work.gitconfig"} {
+			if p, ok := resolveIncludePath(file, v); ok {
+				t.Errorf("%q resolved to %q, want it unresolved", v, p)
+			}
+		}
+	}
+}
+
+// TestGlobalIdentBudgetIsPerCommand: the includeIf files add a git command
+// each, and a host where every command is slow must not run out of one shared
+// budget half-way and report a per-folder identity that is not there.
+func TestGlobalIdentBudgetIsPerCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell to stand in for git")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not in PATH")
+	}
+	dir := t.TempDir()
+	const includes = 4
+	var keys, origin strings.Builder
+	for i := 0; i < includes; i++ {
+		f := filepath.Join(dir, "inc"+string(rune('a'+i))+".gitconfig")
+		if err := os.WriteFile(f, []byte("[core]\n\tsshCommand = ssh\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rec := "includeif.gitdir:~/" + string(rune('a'+i)) + "/.path\n" + filepath.ToSlash(f) + "\x00"
+		keys.WriteString(rec)
+		origin.WriteString("file:" + filepath.ToSlash(filepath.Join(dir, "gitconfig")) + "\x00" + rec)
+	}
+	for name, content := range map[string]string{"keys": keys.String(), "origin": origin.String()} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script := "#!/bin/sh\nsleep 0.3\ncase \"$*\" in\n" +
+		"*--show-origin*) cat '" + dir + "/origin';;\n" +
+		"*--file*) exit 1;;\n" +
+		"*--get-regexp*) cat '" + dir + "/keys';;\n" +
+		"*user.name*) echo Home Person;;\n" +
+		"*user.email*) echo home@example.test;;\n" +
+		"*) exit 1;;\nesac\n"
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// 4 includes take 7 commands of 0.3s: more than the budget below if it is
+	// shared, well under it for each command alone.
+	old := globalIdentCallTimeout
+	globalIdentCallTimeout = time.Second
+	t.Cleanup(func() { globalIdentCallTimeout = old })
+	if got, perFolder := GlobalIdent(); got != "Home Person <home@example.test>" || perFolder {
+		t.Errorf("GlobalIdent() = %q, %v, want the global identity", got, perFolder)
 	}
 }

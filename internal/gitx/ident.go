@@ -59,6 +59,12 @@ func ParseIdent(raw string) (name, email, problem string) {
 // on the path of a write, and git reading its config takes milliseconds.
 const workTreeIdentTimeout = 2 * time.Second
 
+// globalIdentCallTimeout bounds each git command GlobalIdent runs, not the
+// whole function: the includeIf files add one command each, and one budget for
+// all of them would expire on a slow host and turn a harmless setup into the
+// per-folder warning. A variable so a test can shrink it.
+var globalIdentCallTimeout = workTreeIdentTimeout
+
 // WorkTreeIdent returns the author git would record for a commit made in dir,
 // as "Name <email>", or "" when there is none to send (D904). Only inside a
 // work tree: outside one git applies no includeIf gitdir:, and would answer
@@ -102,15 +108,15 @@ func WorkTreeIdent(dir string) string {
 // the identity a per-folder setup keeps away from it. An includeIf whose files
 // set no user, author or committer name or email (a per-organisation
 // core.sshCommand, say) changes no identity and counts for nothing (#1910).
-// Whatever cannot be shown to be harmless counts as an identity: an unreadable
-// or missing file, a nested includeIf, a key that is not a path. It is "" alone
+// Whatever cannot be shown to be harmless counts as an identity: an unreadable,
+// missing or non-regular file, a nested includeIf, a key that is not a path. It is "" alone
 // when the config names no valid identity or cannot be read.
 // GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL are not read: they belong to one
 // process, and the value goes into a file every later session reads.
 func GlobalIdent() (ident string, perFolder bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), workTreeIdentTimeout)
-	defer cancel()
 	git := func(args ...string) ([]byte, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), globalIdentCallTimeout)
+		defer cancel()
 		cmd := procattr.Hide(exec.CommandContext(ctx, "git", append([]string{"config"}, args...)...))
 		cmd.Env = identEnv()
 		cmd.Dir = os.TempDir()
@@ -170,15 +176,8 @@ func includeIfMaySetIdentity(keys string, git func(args ...string) ([]byte, erro
 		if !isFile || !hasValue || value == "" {
 			return true
 		}
-		// A relative path is relative to the file that includes it, as in git.
-		// Git for Windows prints forward slashes; an MSYS-style /c/... path
-		// does not name a file here, fails the stat below and counts as an
-		// identity.
-		p := filepath.FromSlash(value)
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(filepath.Dir(filepath.FromSlash(file)), p)
-		}
-		if _, err := os.Stat(p); err != nil {
+		p, ok := resolveIncludePath(file, value)
+		if !ok || !readableFile(p) {
 			return true
 		}
 		// A nested includeif is not evaluated outside a repository, so its
@@ -190,6 +189,38 @@ func includeIfMaySetIdentity(keys string, git func(args ...string) ([]byte, erro
 		}
 	}
 	return false
+}
+
+// resolveIncludePath is the file an include path names, as git resolves it:
+// a relative path is relative to the file that includes it. ok is false when
+// the path cannot be resolved with certainty, which counts as an identity.
+// Git for Windows prints forward slashes; an MSYS-style /c/... path names no
+// file here. TRAP: on Windows a rooted path with no drive (`/etc/x`, `\x`) is
+// not absolute, and joining it to the including file's directory would read
+// another file than the one git reads (or the MSYS one) and call it harmless.
+func resolveIncludePath(file, value string) (p string, ok bool) {
+	p = filepath.FromSlash(value)
+	if filepath.IsAbs(p) {
+		return p, true
+	}
+	if p != "" && os.IsPathSeparator(p[0]) {
+		return "", false
+	}
+	return filepath.Join(filepath.Dir(filepath.FromSlash(file)), p), true
+}
+
+// readableFile says whether p is a regular file this process can open. TRAP:
+// os.Stat is not enough. git exits 1 for a file it cannot read (mode 000, a
+// directory) exactly as for a file with no match, so "git found nothing" would
+// be read as "the file sets no identity" for a file git never read.
+func readableFile(p string) bool {
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	return err == nil && info.Mode().IsRegular()
 }
 
 // exitCode is the exit status of a failed command, or -1 when it did not run
