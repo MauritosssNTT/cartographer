@@ -108,12 +108,10 @@ type clusterGroup struct {
 
 // GraphClusters projects the visible link graph onto its communities.
 //
-// Trap: visibility is applied before any grouping, by the same builder the
-// flat snapshot uses; a size, label or edge weight is never computed from a
-// concept the caller cannot see (D226, D244). Unfold and the unfold of Focus
-// are naming an element the response may not hold: an id that does not exist
-// lands in DroppedUnfolds, which tells the client nothing about hidden
-// concepts since cluster ids derive from visible members only.
+// Trap: visibility is applied before any grouping, by the builder the flat
+// snapshot uses, so no size, label or weight comes from a concept the caller
+// cannot see (D226, D244); DroppedUnfolds discloses nothing, since cluster ids
+// derive from visible members only.
 func (kb *KB) GraphClusters(opts GraphClusterOptions) (ClusterGraph, error) {
 	vg, err := kb.buildVisibleGraph(opts.Include)
 	if err != nil {
@@ -178,9 +176,8 @@ func (kb *KB) GraphClusters(opts GraphClusterOptions) (ClusterGraph, error) {
 		if _, dup := unfolded[id]; dup {
 			continue
 		}
-		// The fold gives its own element back; it needs room for at least
-		// MinUnfoldMembers members or the cluster stays folded and is reported
-		// as dropped, so the budget is never exceeded.
+		// Needs room for MinUnfoldMembers members, else it is dropped: the
+		// budget is never exceeded.
 		room := MaxClusterElements - elements + 1
 		if room < min(len(g.members), MinUnfoldMembers) {
 			dropUnfold(&out, id)
@@ -222,9 +219,8 @@ func (kb *KB) GraphClusters(opts GraphClusterOptions) (ClusterGraph, error) {
 			PageRank: math.Round(vg.pagerank[u]*1e6) / 1e6, Community: vg.communityOf[u]})
 	}
 
-	// Communities lists only the ones a drawn cluster or node refers to, so the
-	// response stays within the budgets whatever the KB size; the others share
-	// the neutral slot and the client colours a missing rank neutral.
+	// Only the communities a drawn cluster or node refers to are listed: the
+	// rest share the neutral slot and the response stays within budget.
 	ranks := map[int]struct{}{}
 	for _, g := range groups {
 		if g.rank >= 0 {
@@ -358,8 +354,7 @@ func (vg *visibleGraph) clusterGroups(inScope func(i int) bool) []*clusterGroup 
 			tailCommunities++
 			continue
 		}
-		// Named by the top member of the whole community, so the id does not
-		// depend on the scope.
+		// Named by the top member of the whole community: scope-independent.
 		top := vg.ids[vg.members[c.rank][0]]
 		groups = append(groups, named(clusterIDPrefix+string(top), vg.memberLabel(top), vg.communities[c.rank].Slot, c.rank, c.members))
 	}
