@@ -60,6 +60,17 @@ previous release from a throwaway worktree (`make e2e-upgrade`; the release PR's
 lets the build download modules the cache lacks. It needs the tags (`git fetch --tags
 --unshallow` in a shallow clone).
 
+## Assertions under pipefail
+
+The scenarios run with `set -o pipefail`, and `x | grep -q …` exits on the first
+match while `x` may still be writing: `x` dies of SIGPIPE (141), a passing check
+reads as a miss, and a not-discloses check passes on a leak (#1908). Match a
+captured value with a here-string, `grep -q … <<<"$x"`, never a pipe.
+`lib/selftest.sh` runs first in `run.sh` and pins the `assert_mcp_*` helpers with
+a 300 KB body carrying the needle on line 1; `TestE2EScriptsNoPipeIntoGrepQuiet`
+(`internal/repodocs`) refuses the pattern in every script under `test/e2e`, and a
+line that shows the trap on purpose carries `e2e-pipe-ok`.
+
 ## Structure
 
 ```text
@@ -68,6 +79,8 @@ test/e2e/
   lib/
     assert.sh
     kb.sh
+    selftest.sh
+    selftest.sh
     server.sh
   fixtures/
     kb-homelab-lite/
