@@ -26,7 +26,9 @@
 #   9. A file over its film's cap (film/max-bytes.txt, the file record.mjs reads
 #      too; FILM_MAX_BYTES overrides it) is exit 1 naming the file, its size and
 #      the cap, before any file is hashed and with nothing pushed; a file exactly
-#      at the cap is published; a bad override or cap file is exit 1.
+#      at the cap is published; a bad override or cap file is exit 1, and the
+#      grammar is the one of record.mjs: a no-break space, VT, FF or inner CR as
+#      separator, and a value of 16 digits or past int64, are refused.
 #
 # Expected environment variables: E2E_TMP_DIR, REPO_ROOT.
 
@@ -272,11 +274,14 @@ assert_file_contains "${DIR}/out.txt" "cap of 100 bytes"
 unchanged "a file over FILM_MAX_BYTES"
 check "FILM_MAX_BYTES raises every cap" 0 env FILM_MAX_BYTES=6000 film/publish.sh caps/film.webp caps/plugins.webp
 BEFORE="$(git --git-dir="$ORIGIN" rev-parse readme-film)"
-for bad in abc 0 -5 1.5; do
+# 16 digits, and a value past int64, are refused as the others: bash [ -le ] would error on them and report a false "over the cap"
+for bad in abc 0 -5 1.5 05 1234567890123456 9223372036854775808; do
     check "FILM_MAX_BYTES=${bad} is refused" 1 env FILM_MAX_BYTES="$bad" film/publish.sh caps/plugins.webp
     assert_file_contains "${DIR}/out.txt" "FILM_MAX_BYTES must be a positive number of bytes"
 done
 unchanged "a bad FILM_MAX_BYTES"
+check "FILM_MAX_BYTES of 15 digits is accepted" 0 env FILM_MAX_BYTES=999999999999999 film/publish.sh caps/plugins.webp
+BEFORE="$(git --git-dir="$ORIGIN" rev-parse readme-film)"
 printf 'launch 5000\n' > film/max-bytes.txt
 check "a cap file with no default is refused" 1 film/publish.sh caps/plugins.webp
 assert_file_contains "${DIR}/out.txt" "no \"default\" line"
@@ -284,6 +289,25 @@ printf 'default 3000\nlaunch lots\n' > film/max-bytes.txt
 check "a cap that is not a number is refused" 1 film/publish.sh caps/plugins.webp
 assert_file_contains "${DIR}/out.txt" "launch lots"
 unchanged "a bad cap file"
+# One grammar with record.mjs and internal/repodocs/film_test.go: spaces or tabs separate, a CR at the end of the line is dropped,
+# and nothing else (a no-break space, a vertical tab, a form feed, a CR inside the line) is a separator.
+fixture caps/film.webp 5000
+printf 'default 3000\r\n# caps\r\n\r\n \tlaunch\t 5000 \t\r\n' > film/max-bytes.txt
+check "a cap file with tabs and CRLF is read" 0 film/publish.sh caps/film.webp
+BEFORE="$(git --git-dir="$ORIGIN" rev-parse readme-film)"
+for sep in $'\xc2\xa0' $'\v' $'\f' $'\r'; do
+    printf 'default 3000\nlaunch%s5000\n' "$sep" > film/max-bytes.txt
+    check "a cap line separated by $(printf %q "$sep") is refused" 1 film/publish.sh caps/film.webp
+    assert_file_contains "${DIR}/out.txt" "is not \"<film> <positive number of bytes"
+done
+printf 'default 3000\nlaunch 5000\r\r\n' > film/max-bytes.txt
+check "a cap line with two CRs at its end is refused" 1 film/publish.sh caps/film.webp
+printf 'default 3000\nlaunch 1234567890123456\n' > film/max-bytes.txt
+check "a 16-digit cap is refused" 1 film/publish.sh caps/film.webp
+assert_file_contains "${DIR}/out.txt" "launch 1234567890123456"
+printf 'default 3000\nlaunch 9223372036854775808\n' > film/max-bytes.txt
+check "a cap past int64 is refused" 1 film/publish.sh caps/film.webp
+unchanged "a cap file outside the grammar"
 git checkout -q film/max-bytes.txt
 rm -r caps
 

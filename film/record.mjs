@@ -34,24 +34,31 @@ const base = film === "launch" ? "film" : film;
 const out = path.join(here, "out");
 const framesDir = path.join(out, `frames-${film}`);
 // The cap of each film is film/max-bytes.txt (`<film> <bytes>`, `default` for a film with no line), which film/publish.sh reads too.
+// One grammar in record.mjs, publish.sh and internal/repodocs/film_test.go: a line is the key and the bytes split by spaces or tabs
+// (nothing else is a separator: \s would take a no-break space), with spaces or tabs around it and a CR at its end dropped; a blank
+// line or one starting with # (after the spaces and tabs) is skipped. bytes is 1 to 15 digits, no leading zero, here and in
+// FILM_MAX_BYTES, so the value fits every parser.
+const BYTES = "[1-9][0-9]{0,14}";
+const blankLine = /^[ \t]*(#|$)/;
+const capLine = new RegExp(`^[ \\t]*([^ \\t]+)[ \\t]+(${BYTES})[ \\t]*$`);
 const caps = new Map();
-for (const line of fs.readFileSync(path.join(here, "max-bytes.txt"), "utf8").split("\n")) {
-  const text = line.trim();
-  if (!text || text.startsWith("#")) continue;
-  const [key, bytes, ...extra] = text.split(/\s+/);
-  if (extra.length || !/^[1-9][0-9]*$/.test(bytes ?? "")) {
-    console.error(`record: film/max-bytes.txt: "${text}" is not "<film> <positive number of bytes>"`);
+for (const raw of fs.readFileSync(path.join(here, "max-bytes.txt"), "utf8").split("\n")) {
+  const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+  if (blankLine.test(line)) continue;
+  const m = capLine.exec(line);
+  if (!m) {
+    console.error(`record: film/max-bytes.txt: "${line}" is not "<film> <positive number of bytes, at most 15 digits>"`);
     process.exit(1);
   }
-  caps.set(key, Number(bytes));
+  caps.set(m[1], Number(m[2]));
 }
 if (!caps.has("default")) {
   console.error('record: film/max-bytes.txt has no "default" line');
   process.exit(1);
 }
 const maxEnv = process.env.FILM_MAX_BYTES;
-if (maxEnv !== undefined && maxEnv !== "" && !/^[1-9][0-9]*$/.test(maxEnv)) {
-  console.error(`record: FILM_MAX_BYTES must be a positive number of bytes, got "${maxEnv}"`);
+if (maxEnv !== undefined && maxEnv !== "" && !new RegExp(`^${BYTES}$`).test(maxEnv)) {
+  console.error(`record: FILM_MAX_BYTES must be a positive number of bytes, at most 15 digits, got "${maxEnv}"`);
   process.exit(1);
 }
 const maxBytes = maxEnv ? Number(maxEnv) : (caps.get(film) ?? caps.get("default"));

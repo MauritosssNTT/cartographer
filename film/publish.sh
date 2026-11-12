@@ -36,18 +36,23 @@ done
 allowed() { local a; for a in "${ALLOWED[@]}"; do [ "$a" = "$1" ] && return 0; done; return 1; }
 
 # The size cap of each film, from the file record.mjs reads too (film/max-bytes.txt: `<film> <bytes>`, `default` for a
-# film with no line; blank lines and # comments skipped). FILM_MAX_BYTES, when set, replaces every film's cap.
-POSINT='^[1-9][0-9]*$'
+# film with no line). The one grammar of record.mjs, publish.sh and internal/repodocs/film_test.go: a line is
+# `<key>` and `<bytes>` split by spaces or tabs, with spaces or tabs around it, a CR at the end of the line dropped;
+# a blank line or one whose first character after the spaces and tabs is # is skipped. bytes is 1 to 15 digits, no leading
+# zero (so it fits every parser), here and in FILM_MAX_BYTES, which when set replaces every film's cap. Anything else, a
+# no-break space or a vertical tab as separator included, is the same error.
+BYTES='[1-9][0-9]{0,14}'
+WS=$' \t'
+BLANKRE="^[${WS}]*(#|$)"
+CAPRE="^[${WS}]*([^${WS}]+)[${WS}]+(${BYTES})[${WS}]*$"
 CAPKEYS=()
 CAPVALS=()
 while IFS= read -r line || [ -n "$line" ]; do
-    line="${line//$'\r'/}"
-    key=""; bytes=""; extra=""
-    read -r key bytes extra <<<"$line" || true
-    case "$key" in "" | "#"*) continue ;; esac
-    { [ -z "$extra" ] && [[ "$bytes" =~ $POSINT ]]; } || { printf 'publish: film/max-bytes.txt: "%s" is not "<film> <positive number of bytes>"\n' "$line" >&2; exit 1; }
-    CAPKEYS+=("$key")
-    CAPVALS+=("$bytes")
+    line="${line%$'\r'}"
+    if [[ "$line" =~ $BLANKRE ]]; then continue; fi
+    [[ "$line" =~ $CAPRE ]] || { printf 'publish: film/max-bytes.txt: "%s" is not "<film> <positive number of bytes, at most 15 digits>"\n' "$line" >&2; exit 1; }
+    CAPKEYS+=("${BASH_REMATCH[1]}")
+    CAPVALS+=("${BASH_REMATCH[2]}")
 done < film/max-bytes.txt
 # The last line for a name wins, as in record.mjs.
 cap_of() {
@@ -61,8 +66,8 @@ cap_of() {
 }
 cap_of default >/dev/null || exit 1
 MAXENV="${FILM_MAX_BYTES:-}"
-if [ -n "$MAXENV" ] && ! [[ "$MAXENV" =~ $POSINT ]]; then
-    printf 'publish: FILM_MAX_BYTES must be a positive number of bytes, got "%s"\n' "$MAXENV" >&2
+if [ -n "$MAXENV" ] && ! [[ "$MAXENV" =~ ^${BYTES}$ ]]; then
+    printf 'publish: FILM_MAX_BYTES must be a positive number of bytes, at most 15 digits, got "%s"\n' "$MAXENV" >&2
     exit 1
 fi
 

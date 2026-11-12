@@ -131,6 +131,61 @@ func TestFilmPagesAreTheFilmList(t *testing.T) {
 	}
 }
 
+// The grammar of film/max-bytes.txt, the same in record.mjs (the render job), publish.sh (the publish job) and here: a
+// line is a key and its bytes split by spaces or tabs, with spaces or tabs around it and a CR at its end dropped; a
+// blank line, or one whose first character after the spaces and tabs is #, is skipped. bytes is 1 to 15 digits, no
+// leading zero, in the file and in FILM_MAX_BYTES. strings.Fields would take a no-break space or a vertical tab as a
+// separator, and a value past int64 would pass in one parser and error in another.
+var (
+	filmBlankLine = regexp.MustCompile(`^[ \t]*(#|$)`)
+	filmCapLine   = regexp.MustCompile(`^[ \t]*([^ \t]+)[ \t]+([1-9][0-9]{0,14})[ \t]*$`)
+)
+
+// parseFilmCaps returns the key of each cap line in order, and the first line that is not one.
+func parseFilmCaps(text string) (keys []string, bad string, ok bool) {
+	for _, raw := range strings.Split(text, "\n") {
+		line := strings.TrimSuffix(raw, "\r")
+		if filmBlankLine.MatchString(line) {
+			continue
+		}
+		m := filmCapLine.FindStringSubmatch(line)
+		if m == nil {
+			return keys, line, false
+		}
+		keys = append(keys, m[1])
+	}
+	return keys, "", true
+}
+
+func TestFilmCapGrammar(t *testing.T) {
+	for _, c := range []struct {
+		name, text string
+		ok         bool
+	}{
+		{"space", "default 5", true},
+		{"tab and surrounding blanks", " \tdefault\t \t5 \t", true},
+		{"CRLF", "default 5\r\n# c\r\n\r\n", true},
+		{"comment with a CR or a line separator inside", "#a\rb\u2028c", true},
+		{"15 digits", "default 999999999999999", true},
+		{"16 digits", "default 1234567890123456", false},
+		{"past int64", "default 9223372036854775808", false},
+		{"zero", "default 0", false},
+		{"leading zero", "default 05", false},
+		{"no-break space separator", "default\u00a05", false},
+		{"vertical tab separator", "default\v5", false},
+		{"form feed separator", "default\f5", false},
+		{"CR as separator", "default\r5", false},
+		{"two CRs at the end", "default 5\r\r", false},
+		{"three fields", "default 5 6", false},
+		{"no bytes", "default", false},
+		{"sign", "default +5", false},
+	} {
+		if _, bad, ok := parseFilmCaps(c.text); ok != c.ok {
+			t.Errorf("%s: %q accepted=%v, want %v (first refused line %q)", c.name, c.text, ok, c.ok, bad)
+		}
+	}
+}
+
 // The size cap of each film is film/max-bytes.txt, read by record.mjs (the render job) and publish.sh (the publish job,
 // which holds the write token and must not trust the render job's check): one source, so the two cannot disagree.
 // A line naming a film nobody lists is a cap that never applies; a missing default leaves a new film uncapped.
@@ -140,30 +195,34 @@ func TestFilmCapsAreOneFile(t *testing.T) {
 	for _, name := range strings.Fields(readFile(t, root, "film/films.txt")) {
 		listed[name] = true
 	}
+	keys, bad, ok := parseFilmCaps(readFile(t, root, "film/max-bytes.txt"))
+	if !ok {
+		t.Fatalf("film/max-bytes.txt: %q is not \"<film> <positive number of bytes, at most 15 digits>\"", bad)
+	}
 	hasDefault := false
-	for _, line := range strings.Split(readFile(t, root, "film/max-bytes.txt"), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		f := strings.Fields(line)
-		if len(f) != 2 || !regexp.MustCompile(`^[1-9][0-9]*$`).MatchString(f[1]) {
-			t.Errorf("film/max-bytes.txt: %q is not \"<film> <positive number of bytes>\"", line)
-			continue
-		}
-		if f[0] == "default" {
+	for _, k := range keys {
+		if k == "default" {
 			hasDefault = true
-		} else if !listed[f[0]] {
-			t.Errorf("film/max-bytes.txt caps %s, which film/films.txt does not list", f[0])
+		} else if !listed[k] {
+			t.Errorf("film/max-bytes.txt caps %s, which film/films.txt does not list", k)
 		}
 	}
 	if !hasDefault {
 		t.Error(`film/max-bytes.txt has no "default" line: a film with no line of its own would have no cap`)
 	}
+	// Each script must read the file itself (a comment naming it is not a read), and parse it with the grammar above.
+	reads := map[string]*regexp.Regexp{
+		"film/record.mjs": regexp.MustCompile(`readFileSync\([^)]*"max-bytes\.txt"`),
+		"film/publish.sh": regexp.MustCompile(`(?m)^done < film/max-bytes\.txt$`),
+	}
 	for _, f := range []string{"film/record.mjs", "film/publish.sh"} {
 		src := readFile(t, root, f)
-		if !strings.Contains(src, "max-bytes.txt") {
+		code := regexp.MustCompile(`(?m)^[ \t]*(//|#).*$`).ReplaceAllString(src, "")
+		if !reads[f].MatchString(code) {
 			t.Errorf("%s does not read film/max-bytes.txt: the render and the publish would not share one cap", f)
+		}
+		if !strings.Contains(code, "[1-9][0-9]{0,14}") || strings.Contains(code, "[1-9][0-9]*") {
+			t.Errorf("%s does not use the bytes grammar [1-9][0-9]{0,14} of film/max-bytes.txt and FILM_MAX_BYTES", f)
 		}
 		if regexp.MustCompile(`1024 \* 1024|\b(8388608|25165824)\b`).MatchString(src) {
 			t.Errorf("%s repeats a cap that film/max-bytes.txt holds", f)
