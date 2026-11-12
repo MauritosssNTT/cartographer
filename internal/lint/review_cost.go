@@ -42,8 +42,9 @@ var tableSeparatorCell = regexp.MustCompile(`^:?-+:?$`)
 // The result maps the comparison key to the line shown to a reader; both are
 // the normalised line with its code spans intact: two lines whose inline code
 // differs are different facts (#1406). Code spans are masked only to decide
-// what a line is (heading, table row, link or citation line, template line), never
-// to compare lines (D314).
+// what a line is (heading, table row, template line), never
+// to compare lines (D314); a link or citation line is decided on the unmasked
+// line, since a code span is content.
 func factLines(body string, boilerplate map[string]bool) map[string]string {
 	out := map[string]string{}
 	for _, e := range factEntries(body, boilerplate) {
@@ -79,8 +80,10 @@ func factEntries(body string, boilerplate map[string]bool) []factEntry {
 				o, _ := tableCells(key)
 				key = "| " + strings.Join(o, " | ") + " |"
 			}
-		} else if isLinkOnlyLine(line) {
-			continue // a link or citation is not a fact (#1864)
+		} else if isLinkOnlyLine(key) {
+			// A link or citation is not a fact (#1864); a code span is
+			// content, so the test reads the unmasked line.
+			continue
 		}
 		if len(t) < repeatedFactMinBytes {
 			continue
@@ -93,9 +96,11 @@ func factEntries(body string, boilerplate map[string]bool) []factEntry {
 	return out
 }
 
-// isLinkOnlyLine says whether a masked, non-table line is a link or a
+// isLinkOnlyLine says whether an unmasked, non-table line is a link or a
 // citation and nothing else: once the list marker (if any), the wiki-links and
-// the inline links are removed, no Unicode letter or digit is left. The
+// the inline links are removed, no Unicode letter or digit is left. It takes
+// the line with its code spans intact: a code span is content, so a line
+// holding one next to a citation is a fact. The
 // threshold of repeatedFactMinBytes is deliberately not applied here: a URL
 // makes a citation long without making it a fact (#1864).
 func isLinkOnlyLine(line string) bool {

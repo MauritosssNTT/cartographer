@@ -651,6 +651,22 @@ func TestReviewRepeatedFactLinkWithWords(t *testing.T) {
 	}
 }
 
+// #1864: a code span is content, so a line holding one next to a citation
+// is a fact, not a link-only line.
+func TestReviewRepeatedFactCodeSpanWithCitation(t *testing.T) {
+	t.Parallel()
+	k := tempKB(t)
+	writeFile(t, k.DataRoot(), "m/_map.md", "---\ntype: Map\ntitle: M\n---\n")
+	line := "`kubectl rollout restart deployment/api -n prod` ([runbook](../ops/runbooks/restart-the-api-deployment.md))."
+	for i := 0; i < 3; i++ {
+		writeFile(t, k.DataRoot(), fmt.Sprintf("m/c%d.md", i), fmt.Sprintf("---\ntype: Note\ntitle: C%d\n---\n%s\n", i, line))
+	}
+	got := itemsOf(review(t, k), ReviewRepeatedFact)
+	if len(got) != 1 || !strings.Contains(got[0].Evidence, "kubectl rollout restart deployment/api") || got[0].Weight != 3 {
+		t.Fatalf("want the code span + citation line: %+v", got)
+	}
+}
+
 // TestReviewReadHotspot: both conditions are needed (D301).
 func TestReviewReadHotspot(t *testing.T) {
 	t.Parallel()
