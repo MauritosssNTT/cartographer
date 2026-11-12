@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build darwin || linux || freebsd || netbsd || openbsd || dragonfly
 
 package gitx
 
@@ -76,5 +76,43 @@ func TestIncludeIfFifoIsAPerFolderIdentity(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("includeIfMaySetIdentity blocked on a FIFO include")
+	}
+}
+
+// TestOpenNoBlockReturnsOnAFifo pins the open itself, not only the check that
+// follows it: a path that is a FIFO by the time it is opened (swapped in after
+// any earlier Stat) must not wait for a writer. The descriptor then reports a
+// non-regular file, which readableFile turns into false.
+func TestOpenNoBlockReturnsOnAFifo(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo.gitconfig")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("no FIFO on this filesystem: %v", err)
+	}
+	type result struct {
+		regular bool
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		f, err := openNoBlock(fifo)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		defer f.Close()
+		fi, err := f.Stat()
+		done <- result{regular: err == nil && fi.Mode().IsRegular(), err: err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("openNoBlock on a FIFO: %v", r.err)
+		}
+		if r.regular {
+			t.Error("the descriptor of a FIFO reports a regular file")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("openNoBlock blocked on a FIFO: it waits for a writer")
 	}
 }

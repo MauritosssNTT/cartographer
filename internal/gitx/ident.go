@@ -213,21 +213,19 @@ func resolveIncludePath(file, value string) (p string, ok bool) {
 // os.Stat is not enough. git exits 1 for a file it cannot read (mode 000, a
 // directory) exactly as for a file with no match, so "git found nothing" would
 // be read as "the file sets no identity" for a file git never read. TRAP: the
-// file is checked regular BEFORE it is opened: an O_RDONLY open of a FIFO (or
-// of a symlink to one, or a device that blocks on open) waits for a writer
-// forever, outside any timeout, and would hang sync and connect.
+// open must not block, and a Stat before it does not make it safe: a path
+// swapped for a FIFO between the Stat and the open would wait for a writer
+// forever, outside any timeout, and hang sync and connect. So the file is
+// opened without blocking (openNoBlock) and the descriptor itself is checked
+// regular; there is no earlier Stat to race. Every failure is false.
 func readableFile(p string) bool {
-	before, err := os.Stat(p) // follows links
-	if err != nil || !before.Mode().IsRegular() {
-		return false
-	}
-	f, err := os.Open(p)
+	f, err := openNoBlock(p)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	after, err := f.Stat()
-	return err == nil && after.Mode().IsRegular() && os.SameFile(before, after)
+	fi, err := f.Stat()
+	return err == nil && fi.Mode().IsRegular()
 }
 
 // exitCode is the exit status of a failed command, or -1 when it did not run
