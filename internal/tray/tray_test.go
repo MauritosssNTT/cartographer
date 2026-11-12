@@ -526,6 +526,96 @@ func TestRunRefreshesAgentsOnRequest(t *testing.T) {
 	}
 }
 
+// A request that arrives while a read waits behind a running one (a tick queued
+// it) is answered by that read, which begins after the request: it must not
+// also be remembered, or one more read follows for nothing.
+func TestRunRequestBehindQueuedReadIsNotRemembered(t *testing.T) {
+	f := &fakeEnv{
+		status: service.Status{Installed: true, HTTPAddr: "127.0.0.1:1"},
+		health: &client.Health{Version: "1", Ready: boolp(true)},
+		ticks:  make(chan time.Time),
+	}
+	d := f.deps()
+	var mu sync.Mutex
+	reads := 0
+	gate := make(chan struct{})
+	d.Agents = func() Agents {
+		mu.Lock()
+		reads++
+		n := reads
+		mu.Unlock()
+		<-gate
+		return Agents{Known: true, N: n}
+	}
+	now := time.Unix(1000, 0)
+	d.Now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(by time.Duration) { mu.Lock(); now = now.Add(by); mu.Unlock() }
+	requests := make(chan struct{})
+	d.AgentRequests = requests
+	readCount := func() int { mu.Lock(); defer mu.Unlock(); return reads }
+	waitReads := func(want int) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); readCount() != want; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("agents read %d times, want %d", readCount(), want)
+			}
+		}
+	}
+	settled := func(want int) {
+		t.Helper()
+		time.Sleep(50 * time.Millisecond)
+		if got := readCount(); got != want {
+			t.Fatalf("agents read %d times, want %d", got, want)
+		}
+	}
+	nextSnapshot := func(out <-chan Snapshot) Snapshot {
+		t.Helper()
+		select {
+		case s := <-out:
+			return s
+		case <-time.After(5 * time.Second):
+			t.Fatal("no snapshot emitted")
+			return Snapshot{}
+		}
+	}
+	finishRead := func(out <-chan Snapshot, wantN int) {
+		t.Helper()
+		gate <- struct{}{}
+		if s := nextSnapshot(out); s.Agents.N != wantN {
+			t.Fatalf("read %d was not emitted: %+v", wantN, s.Agents)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan Snapshot, 16)
+	done := make(chan struct{})
+	go func() { Run(ctx, d, 0, func(s Snapshot) { out <- s }); close(done) }()
+	defer func() { cancel(); close(gate); <-done }()
+
+	nextSnapshot(out)
+	waitReads(1) // the read at start, still running
+	// The periodic read falls due while it runs: it is queued behind it. The
+	// last tick sent twice proves Run handled the one before.
+	for i := 1; i < int(AgentsInterval/MinInterval); i++ {
+		f.ticks <- time.Now()
+	}
+	f.ticks <- time.Now()
+	f.ticks <- time.Now()
+	settled(1)
+
+	requests <- struct{}{}
+	requests <- struct{}{}
+	finishRead(out, 1)
+	waitReads(2) // the queued read begins, after the request
+	finishRead(out, 2)
+
+	// The window has long ended: nothing was remembered, no third read.
+	advance(2 * AgentsDebounce)
+	f.ticks <- time.Now()
+	f.ticks <- time.Now()
+	settled(2)
+}
+
 // A permanent Status() error is logged once, not on every tick: again only
 // when the message changes or after a success.
 func TestSnapshotLogsARepeatedStatusErrorOnce(t *testing.T) {
