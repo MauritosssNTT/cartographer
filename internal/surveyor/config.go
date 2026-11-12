@@ -144,8 +144,10 @@ type Config struct {
 	opened string
 	// Warnings are conditions worth one line at start that do not stop it.
 	Warnings []string
-	// Checks holds the last check outcome of each recipe, in memory: the poll
-	// and `source test` record into it, Sources reads it (nil: never recorded).
+	// Checks holds the last check outcome of each recipe, in memory: the system
+	// poll records into it, Sources reads it (nil: never recorded). A feed poll
+	// sends list only, so a feed recipe reports never; `source test` is its own
+	// process and records nothing.
 	Checks *CheckLog
 
 	token string

@@ -591,7 +591,10 @@ cannot make a run look recent or stale.
 
 A Surveyor reports its effective configuration on its own route, not in the heartbeat: the config is read once at
 start, so riding a beat would re-send tens of KiB thousands of times a day, and a report Meridian refuses must
-never fail the liveness beat. The Surveyor posts at start and again only when a beat answers `settings_wanted`.
+never fail the liveness beat. The Surveyor posts at start, again when a beat answers `settings_wanted`, and again (at most once per beat) when a
+system recipe's check has run since the last accepted report. A 4xx (an older server's `404`, a `426`, the `404` of a
+restarted server or of a perimeter with no writable KB) is logged once per status and the post backs off for ten beats,
+then is tried again, as the runs report is: a refusal never turns the report off for the life of the process.
 
 Body (`application/json`, 128 KiB cap): `component: "surveyor"`, `protocol` (§Component contract), `perimeter` (as in the heartbeat), `surveyor`, `version`, `kbs` (1-32 names)
 `entries` (the Surveyor schema keys in the shape of the settings entries) and `sources` (below). Answer `{received: true}`. A `yaml`
@@ -604,7 +607,7 @@ the key's type (`bool`; `int`, whole and at most 2^40; `env`, a variable name op
 `url` with userinfo, a query, a fragment or that does not parse, and a `string` the table does not vouch for (an
 enum outside its values, a name or clock that does not match its shape, any key with no shape), is shown as
 `<redacted>`; a list, a map, a wrong type, an unknown key or a repeated key drops the entry. A body containing the
-request's own bearer token (raw, or in the decoded `version` or entries) is refused whole (`400`). Only the KBs the
+request's own bearer token (raw, or in the decoded `version`, entries or sources) is refused whole (`400`). Only the KBs the
 caller may write are kept; none left answers the `404` of an unknown KB. `perimeter` is an identifier (`[a-z0-9-]`, at most 40) and `version` must match `[0-9A-Za-z._+-]{1,32}` or is
 dropped. Residual risks, accepted: a credential embedded in a URL path, an `*_env` value that is a well-formed
 name (a pasted `ghp_…` token is one) and a `models[].model` that looks like a key cannot be told from a legitimate
@@ -617,13 +620,15 @@ again.
 is `feed` or `system` for a recipe and absent for a connector. `check` is the last `check` outcome: `{outcome, code?,
 age_seconds?}`, `outcome` being `ok`, `failed` (with the failure `code`, such as `check_failed` or `identity_not_read_only`),
 `unsupported` (a connector or a built-in recipe has no check verb, and a recipe that exits 64 on it says so) or `never` (not
-checked since the process started). The Surveyor records it in memory where the poll and `source test` already call `check`
-(a system Source's poll, the dry run), so a feed recipe the poll never checks reports `never` until a `source test` runs in
-that process; a new check posts the report again at the next beat. Names, origins and outcomes only: no command, argument,
+checked since the process started). The Surveyor records it in memory where the poll already calls `check`, which is a system
+Source's poll: in a serving Surveyor a feed exec or Starlark recipe reports `never`, because a feed poll sends `list` only
+(`source test` is its own process with no beater, so it records nothing the report could carry). A new check posts the
+report again at the next beat. Names, origins and outcomes only: no command, argument,
 URL, variable name, header or detail ever leaves the Surveyor. The array is optional (a Surveyor that predates it sends none:
 the row says `[]`), an additive field of protocol 1. `surveyorconfig.ScrubSources` runs on receipt: an element with an
 unknown origin, kind, shape or outcome, a name that is not an operator-local or a `<plugin>/<name>` name, a plugin that is not
-its name's, a digest that is not 64 hex digits, a `code` that is not an identifier, or a repeated name is dropped alone (the
+its name's, a digest that is not 64 hex digits, a `code` that is not an identifier, or a name repeated among the recipes or among the connectors (a recipe and a connector
+may share one: both are kept, the recipe first) is dropped alone (the
 report is not refused), the elements past 200 are cut, and each report replaces the array whole. The server dates a check
 itself: the Surveyor sends `age_seconds` and the row shows `check.at`, the receipt time minus that age (a time the sender wrote
 is not read). The settings read route returns the array in each `surveyors` row, under the same visibility as the row.
