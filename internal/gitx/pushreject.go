@@ -51,25 +51,44 @@ var permanentPushRules = []struct {
 // non-fast-forward "[rejected]" is not matched either: it is retried through a
 // rebase.
 func PermanentPushRejection(output string) (remedy string, ok bool) {
+	fixed, quote, ok := permanentPushRule(output)
+	if !ok {
+		return "", false
+	}
+	return fixed + quote, true
+}
+
+// PermanentPushRemedy is PermanentPushRejection for a surface that must not
+// carry the remote's words (/health, status, doctor): only the rule's fixed
+// sentence, "" when output is not a permanent refusal. It never returns any of
+// output.
+func PermanentPushRemedy(output string) string {
+	fixed, _, _ := permanentPushRule(output)
+	return fixed
+}
+
+// permanentPushRule classifies output: the matching rule's fixed sentence and the
+// quote of the remote's line that triggered it.
+func permanentPushRule(output string) (fixed, quote string, ok bool) {
 	lower := strings.ToLower(output)
 	for _, t := range transientPushRefusals {
 		if strings.Contains(lower, t) {
-			return "", false
+			return "", "", false
 		}
 	}
 	for _, r := range permanentPushRules {
 		for _, p := range r.phrases {
 			if lineWith(output, []string{p}, r.rejectedOnly) != "" {
-				return r.remedy + quoteLine(output, r.phrases, r.rejectedOnly), true
+				return r.remedy, quoteLine(output, r.phrases, r.rejectedOnly), true
 			}
 		}
 	}
 	// "Permission to X denied" and a 403 that says why. A 403 alone, or one that
 	// mentions a rate limit, is not a verdict on the credential.
 	if strings.Contains(lower, "permission to") && strings.Contains(lower, "denied") {
-		return permanentPushRules[3].remedy + quoteLine(output, []string{"permission to"}, false), true
+		return permanentPushRules[3].remedy, quoteLine(output, []string{"permission to"}, false), true
 	}
-	return "", false
+	return "", "", false
 }
 
 // lineWith is the first line of output holding one of phrases (case-folded); with

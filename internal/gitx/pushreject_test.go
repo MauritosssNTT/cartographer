@@ -53,6 +53,25 @@ func TestPermanentPushRejection(t *testing.T) {
 	}
 }
 
+// PermanentPushRemedy is the rule's fixed sentence only: none of the remote's
+// own text, so it can go out on /health.
+func TestPermanentPushRemedy_FixedSentenceOnly(t *testing.T) {
+	t.Parallel()
+	out := "remote: Permission to org/kb.git denied to user-7f3.\nfatal: unable to access 'https://example.com/org/kb.git/': The requested URL returned error: 403"
+	got := PermanentPushRemedy(out)
+	if !strings.Contains(got, "this credential cannot push") {
+		t.Fatalf("PermanentPushRemedy = %q, want the cannot-push sentence", got)
+	}
+	for _, leak := range []string{"user-7f3", "org/kb", "example.com", "the remote said"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("PermanentPushRemedy = %q leaks %q", got, leak)
+		}
+	}
+	if got := PermanentPushRemedy(" ! [remote rejected] main -> main (failed to update ref)"); got != "" {
+		t.Errorf("a transient refusal = %q, want none", got)
+	}
+}
+
 // An HTTP 401 on a clone or a fetch is a rejected credential too; a bare 403 is not.
 func TestRemoteRemedy_401IsRejectedCredentials(t *testing.T) {
 	t.Parallel()
