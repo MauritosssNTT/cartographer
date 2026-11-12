@@ -70,8 +70,10 @@ type Beater struct {
 	// person would report (feedback.go). Its pending entries ride the runs
 	// report; a protocol the two sides cannot agree on is noted here too.
 	Candidates *CandidateLog
-	Now        func() time.Time // time.Now when nil
-	Logf       func(format string, args ...any)
+	// Protocol is the component protocol spoken; componentproto.Protocol when zero.
+	Protocol int
+	Now      func() time.Time // time.Now when nil
+	Logf     func(format string, args ...any)
 
 	sendMu sync.Mutex // one request at a time
 
@@ -170,6 +172,13 @@ type runsBody struct {
 	// Candidates are the report candidates the server has not seen
 	// (componentproto.MaxCandidatesPerPost at most), as ages the server dates.
 	Candidates []runsCandidate `json:"report_candidates,omitempty"`
+}
+
+func (b *Beater) protocol() int {
+	if b.Protocol > 0 {
+		return b.Protocol
+	}
+	return componentproto.Protocol
 }
 
 func (b *Beater) interval() time.Duration {
@@ -282,7 +291,7 @@ func DeclaredTasks(cfg *Config) []TaskDecl {
 }
 
 func (b *Beater) body(s State) beatBody {
-	out := beatBody{Protocol: componentproto.Protocol, Surveyor: b.Surveyor, Perimeter: b.Perimeter, Version: b.Version, KBs: b.KBs, State: s.Run,
+	out := beatBody{Protocol: b.protocol(), Surveyor: b.Surveyor, Perimeter: b.Perimeter, Version: b.Version, KBs: b.KBs, State: s.Run,
 		IntervalSeconds: int(b.interval() / time.Second), Tasks: b.Tasks}
 	if !s.LastRun.At.IsZero() {
 		out.LastRun = &beatLastRun{At: s.LastRun.At.UTC(), UnitsDone: s.LastRun.Units, TokensSpent: s.LastRun.Tokens, Commits: s.LastRun.Commits}
@@ -332,7 +341,7 @@ func (b *Beater) send() {
 				if first {
 					b.Candidates.Note(componentproto.CandidateProtocolMismatch, "", "", "protocol_refused")
 					b.logf("surveyor: the server refuses component protocol %d (it speaks %d, serves from %d): idle signal unknown until it is upgraded or this Surveyor is",
-						componentproto.Protocol, re.ServerProtocol, re.ServerMinProtocol)
+						b.protocol(), re.ServerProtocol, re.ServerMinProtocol)
 				}
 			}
 		}
@@ -340,7 +349,7 @@ func (b *Beater) send() {
 	}
 	// An answer whose protocol is more than one below ours comes from a server
 	// this Surveyor was not written for: behave as against an older server.
-	if a.Protocol > 0 && !componentproto.Supports(componentproto.Protocol, a.Protocol) && a.Protocol < componentproto.Protocol {
+	if a.Protocol > 0 && !componentproto.Supports(b.protocol(), a.Protocol) && a.Protocol < b.protocol() {
 		b.mu.Lock()
 		first := !b.loggedBehind
 		b.loggedBehind = true
@@ -348,7 +357,12 @@ func (b *Beater) send() {
 		b.mu.Unlock()
 		if first {
 			b.Candidates.Note(componentproto.CandidateProtocolMismatch, "", "", "server_behind")
-			b.logf("surveyor: the server speaks component protocol %d, two or more below %d: idle signal unknown", a.Protocol, componentproto.Protocol)
+			b.logf("surveyor: the server speaks component protocol %d, two or more below %d: idle signal unknown", a.Protocol, b.protocol())
+		}
+		// The runs route is a different one: its report, and the candidate just
+		// noted, go to a server that may still take them (a 4xx backs off).
+		if s.Run != StateStopped {
+			b.postRuns(a)
 		}
 		return
 	}
@@ -442,7 +456,7 @@ func (b *Beater) postRuns(a *client.HeartbeatAnswer) {
 		b.mu.Unlock()
 		return
 	}
-	body := runsBody{Protocol: componentproto.Protocol, ID: b.Surveyor, Perimeter: b.Perimeter, Runs: []runsRun{}, Alarms: []runsAlarm{}, Candidates: cands}
+	body := runsBody{Protocol: b.protocol(), ID: b.Surveyor, Perimeter: b.Perimeter, Runs: []runsRun{}, Alarms: []runsAlarm{}, Candidates: cands}
 	for _, i := range batch {
 		r := b.runs[i].Run
 		body.Runs = append(body.Runs, runsRun{RunID: r.ID, Task: r.Task, KB: r.KB, StartedAt: r.Started.UTC(),

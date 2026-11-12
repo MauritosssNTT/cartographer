@@ -51,6 +51,9 @@ func TestObserveCalls_RecordsUnexpectedErrorsAsCodesOnly(t *testing.T) {
 		{"stale write is retried", "stale_write: " + pageText, ""},
 		{"read only grant", "read_only_profile: " + pageText, ""},
 		{"a tool prefixing its own refusal", "concept_read: " + pageText, ""},
+		{"a batch prefixing its sub-operation", "concept_move: " + pageText, ""},
+		{"a check prefixing its refusal", "validate: " + pageText, ""},
+		{"a gate prefixing its refusal", "commit_gate: " + pageText, ""},
 		{"validation text has no code", "invalid params: " + pageText, ""},
 		{"a sentence", pageText, ""},
 	} {
@@ -201,6 +204,48 @@ func TestBeaterNotesAProtocolTheServerRefusesOncePerCause(t *testing.T) {
 	}
 }
 
+// A protocol the server refuses (426) cannot be posted while it lasts, the runs
+// route refuses it too; the candidate is kept and arrives once the beat is accepted.
+func TestBeaterProtocolCandidateArrivesWhenTheBeatIsAcceptedAgain(t *testing.T) {
+	now := time.Now()
+	api := &stubAPI{answer: &client.HeartbeatAnswer{}, beatErr: &client.RemoteError{HTTPStatus: 426, ServerProtocol: 4, ServerMinProtocol: 3}}
+	b := newBeater(api, &now)
+	b.Candidates = NewCandidateLog(func() time.Time { return now })
+	b.send()
+	if len(api.runPosts) != 0 {
+		t.Fatalf("a refused protocol posted runs: %v", api.runPosts)
+	}
+	api.mu.Lock()
+	api.beatErr = nil
+	api.mu.Unlock()
+	b.send()
+	if len(api.runPosts) != 1 {
+		t.Fatalf("posts = %d, want the candidate delivered once the beat is accepted", len(api.runPosts))
+	}
+	c := api.runPosts[0]["report_candidates"].([]any)[0].(map[string]any)
+	if c["kind"] != "protocol_mismatch" || c["code"] != "protocol_refused" {
+		t.Fatalf("candidate = %v", c)
+	}
+}
+
+// An answer two or more protocols below ours skips the idle signal but not the
+// runs report: the candidate it raises goes in the same beat.
+func TestBeaterServerFarBelowStillPostsItsCandidate(t *testing.T) {
+	now := time.Now()
+	api := &stubAPI{answer: &client.HeartbeatAnswer{Protocol: 2}}
+	b := newBeater(api, &now)
+	b.Protocol = 5
+	b.Candidates = NewCandidateLog(func() time.Time { return now })
+	b.Beat(context.Background(), State{Run: StateIdle})
+	if len(api.runPosts) != 1 || api.runPosts[0]["protocol"] != float64(5) {
+		t.Fatalf("posts = %v, want one runs post carrying the candidate", api.runPosts)
+	}
+	c := api.runPosts[0]["report_candidates"].([]any)[0].(map[string]any)
+	if c["kind"] != "protocol_mismatch" || c["code"] != "server_behind" {
+		t.Fatalf("candidate = %v", c)
+	}
+}
+
 func TestNoteContract_AnUndecodableResultIsACandidate(t *testing.T) {
 	t.Parallel()
 	l := NewCandidateLog(nil)
@@ -213,4 +258,24 @@ func TestNoteContract_AnUndecodableResultIsACandidate(t *testing.T) {
 		t.Fatalf("recorded %s", got)
 	}
 	NoteContract(answerTools{}, "concept_list") // a plain caller: nothing to record, nothing to fail
+}
+
+// The caller a task holds is wrapped by the guards of its kind: the log is
+// found through every one of them.
+func TestNoteContract_LooksThroughTheGuards(t *testing.T) {
+	t.Parallel()
+	wrap := map[string]func(ToolCaller) ToolCaller{
+		"promptGuard": func(in ToolCaller) ToolCaller { return newPromptGuard(in, "t") },
+		"readOnly":    func(in ToolCaller) ToolCaller { return readOnly{in} },
+		"doctorGuard": func(in ToolCaller) ToolCaller { return &doctorGuard{inner: in} },
+		"ingestTools": func(in ToolCaller) ToolCaller { return &ingestTools{inner: in} },
+		"two deep":    func(in ToolCaller) ToolCaller { return readOnly{newPromptGuard(in, "t")} },
+	}
+	for name, w := range wrap {
+		l := NewCandidateLog(nil)
+		NoteContract(w(ObserveCalls(answerTools{}, l, "kb-a")), "concept_read")
+		if got := pendingJSON(t, l); !strings.Contains(got, `"kind":"contract_mismatch"`) {
+			t.Errorf("%s hides the log: %s", name, got)
+		}
+	}
 }

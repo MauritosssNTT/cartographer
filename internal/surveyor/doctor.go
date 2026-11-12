@@ -201,6 +201,9 @@ const maxRefusedWrites = 3
 
 func (g *doctorGuard) ListTools() ([]client.ToolInfo, error) { return g.inner.ListTools() }
 
+// unwrap names the caller under the guard, for NoteContract.
+func (g *doctorGuard) unwrap() ToolCaller { return g.inner }
+
 func (g *doctorGuard) CallTool(name string, args any) (client.ToolOutput, error) {
 	if isRead(name) {
 		return g.inner.CallTool(name, args)

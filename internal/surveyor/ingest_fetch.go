@@ -235,6 +235,9 @@ func (t *ingestTools) ListTools() ([]client.ToolInfo, error) {
 }
 
 // CallTool serves source_fetch locally and passes the rest through.
+// unwrap names the caller under the unit tools, for NoteContract.
+func (t *ingestTools) unwrap() ToolCaller { return t.inner }
+
 func (t *ingestTools) CallTool(name string, args any) (client.ToolOutput, error) {
 	if name == sourceFetchTool {
 		if t.inline {

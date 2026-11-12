@@ -39,6 +39,36 @@ var expectedRefusals = map[string]bool{
 	"refused": true, "forbidden": true, "not_found": true, "stale_write": true, "conflict": true, "oversized": true,
 }
 
+// operationPrefixes are the domains of the server's tool names, and operationNames
+// the sub-operations and checks that prefix a message without being a tool:
+// `concept_move: ...` out of a concept_batch, `validate: ...`, `supersede: ...`. A
+// leading token that names an operation is a refusal's prefix, never a code.
+// internal/mcpserver's docs test keeps its own list of the same domains; a new
+// domain or sub-operation is one entry here.
+var (
+	operationPrefixes = []string{
+		"atlas_", "map_", "concept_", "index_", "log_", "graph_", "search_", "skill_", "service_", "secret_",
+		"artifact_", "template_", "asset_", "sync_", "git_", "kb_", "archive_", "dossier_", "conflict_",
+		"conflicts_", "commit_", "gate_", "changes_", "contradiction_", "source_",
+	}
+	operationNames = map[string]bool{
+		"validate": true, "lint": true, "supersede": true, "snapshot": true, "write_gate": true, "rewrite_links": true,
+		"inbound_links": true, "outbound_links": true, "repair_revert": true, "reindex": true,
+	}
+)
+
+func namesAnOperation(head string) bool {
+	if operationNames[head] {
+		return true
+	}
+	for _, p := range operationPrefixes {
+		if strings.HasPrefix(head, p) {
+			return true
+		}
+	}
+	return false
+}
+
 type candidateKey struct{ kind, kb, tool, code string }
 
 type candidateEntry struct {
@@ -216,27 +246,37 @@ func (o observed) noteContract(tool string) {
 	o.log.Note(componentproto.CandidateContractMismatch, tool, o.kb, "undecodable")
 }
 
-// NoteContract records, when tools is an observed caller, that the result of
-// tool could not be decoded as the shape the Surveyor reads. One line at each
-// place that decodes a documented result.
+// NoteContract records that the result of tool could not be decoded as the
+// shape the Surveyor reads. One line at each place that decodes a documented
+// result. It looks through the wrappers a task's caller goes through (a guard
+// with an unwrap method) to the observed caller under them; a wrapper without
+// one hides the log, so a new wrapper gets an unwrap method.
 func NoteContract(tools ToolCaller, tool string) {
-	if o, ok := tools.(interface{ noteContract(string) }); ok {
-		o.noteContract(tool)
+	for i := 0; i < 8 && tools != nil; i++ {
+		if o, ok := tools.(interface{ noteContract(string) }); ok {
+			o.noteContract(tool)
+			return
+		}
+		u, ok := tools.(interface{ unwrap() ToolCaller })
+		if !ok {
+			return
+		}
+		tools = u.unwrap()
 	}
 }
 
 // unexpectedCode classifies the error result of a call to tool: an internal
 // error is always a candidate; otherwise the leading `<code>:` token is, when it
-// is shaped like a code, is not a refusal the Surveyor expects and is not the
-// tool's own name (a tool prefixes its validation and refusal messages with it:
-// that is a refusal, not a code). A text with no leading code is not a
+// is shaped like a code, is not a refusal the Surveyor expects and does not name
+// an operation (a tool prefixes its validation and refusal messages with its own
+// name, a batch with its sub-operation's: that is a refusal, not a code). A text with no leading code is not a
 // candidate. Only the code leaves.
 func unexpectedCode(tool, text string) (string, bool) {
 	if strings.HasPrefix(text, client.InternalErrorPrefix) {
 		return internalErrorCode, true
 	}
 	head, _, found := strings.Cut(text, ":")
-	if !found || head == tool || !candidateCodeRe.MatchString(head) || expectedRefusals[head] || strings.HasPrefix(head, "read_only") {
+	if !found || head == tool || namesAnOperation(head) || !candidateCodeRe.MatchString(head) || expectedRefusals[head] || strings.HasPrefix(head, "read_only") {
 		return "", false
 	}
 	return head, true
