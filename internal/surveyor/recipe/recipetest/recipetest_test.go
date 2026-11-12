@@ -76,6 +76,32 @@ func status(res []Result, check string) string {
 	return "absent"
 }
 
+// feedRecipe is a feed recipe that conforms but for what its list returns.
+func feedRecipe(result string) string {
+	return `
+def spec(r):
+    return {"title": "Wiki", "description": "d", "shapes": ["feed"], "verbs": ["spec", "check", "list"], "settings": {}, "env": []}
+def check(r):
+    return {"ok": True}
+def lst(r):
+    return ` + result + `
+recipe("wiki", lst, spec = spec, check = check)
+`
+}
+
+// systemRecipe is a system recipe, read-only check included, whose list returns result.
+func systemRecipe(result string) string {
+	return `
+def spec(r):
+    return {"title": "S", "description": "d", "shapes": ["system"], "verbs": ["spec", "check", "list"], "settings": {}, "env": []}
+def check(r):
+    return {"ok": True, "read_only": True, "identity": "reader"}
+def lst(r):
+    return ` + result + `
+recipe("wiki", lst, shape = "system", spec = spec, check = check)
+`
+}
+
 // A recipe that conforms passes every check it can be asked, and what it cannot
 // be asked is skipped with a reason.
 const conforming = `
@@ -130,9 +156,23 @@ func TestEveryCheckFailsOnItsNonConformingRecipe(t *testing.T) {
 		{"spec", func(t *testing.T) Input { // env outside the manifest's
 			return starInput(t, strings.Replace(conforming, `"env": ["TOKEN"]`, `"env": ["OTHER"]`, 1), "feed", scenario())
 		}},
-		{"parser", func(t *testing.T) Input {
-			src := "def lst(r):\n    return {\"entries\": [" + entry + ", " + entry + "], \"next_cursor\": \"c\"}\nrecipe(\"wiki\", lst)\n"
-			return starInput(t, src, "feed", scenario())
+		{"parser", func(t *testing.T) Input { // a revision that is not a string: the parser refuses the line
+			return starInput(t, feedRecipe(`{"entries": [{"key": "a", "title": "A", "revision": 1, "change": "added"}], "next_cursor": "c"}`), "feed", scenario())
+		}},
+		{"entries", func(t *testing.T) Input { // a key twice
+			return starInput(t, feedRecipe(`{"entries": [`+entry+`, `+entry+`], "next_cursor": "c"}`), "feed", scenario())
+		}},
+		{"entries", func(t *testing.T) Input { // no revision
+			return starInput(t, feedRecipe(`{"entries": [{"key": "a", "title": "A", "change": "added"}], "next_cursor": "c"}`), "feed", scenario())
+		}},
+		{"entries", func(t *testing.T) Input { // an entry that says it was removed (a deletion is a delete line)
+			return starInput(t, feedRecipe(`{"entries": [{"key": "a", "title": "A", "revision": "1", "change": "removed"}], "next_cursor": "c"}`), "feed", scenario())
+		}},
+		{"system", func(t *testing.T) Input { // a system listing with a cursor to resume from
+			return starInput(t, systemRecipe(`{"entries": [{"key": "k", "content": "x"}], "next_cursor": "more"}`), "system", scenario())
+		}},
+		{"system", func(t *testing.T) Input { // a system listing with a delete line
+			return starInput(t, systemRecipe(`{"entries": [{"key": "k", "content": "x"}], "deletes": ["gone"], "next_cursor": ""}`), "system", scenario())
 		}},
 		{"incremental", func(t *testing.T) Input {
 			src := "def lst(r):\n    return {\"entries\": [" + entry + "], \"next_cursor\": \"c1\"}\nrecipe(\"wiki\", lst)\n"
@@ -178,6 +218,15 @@ recipe("wiki", lst, shape = "system", spec = spec, check = check)
 			if got := status(res, tc.check); got != Fail {
 				t.Errorf("%s: %s, want fail; %+v", tc.check, got, res)
 			}
+			// The entry and system rules are the parser's: it is read once, by the
+			// check that owns the rule, and the parser check is silent on them.
+			if tc.check == "entries" || tc.check == "system" || tc.check == "parser" {
+				for _, c := range Checks {
+					if c.Name != tc.check && status(res, c.Name) == Fail {
+						t.Errorf("%s fixture also fails %s: %+v", tc.check, c.Name, res)
+					}
+				}
+			}
 		})
 	}
 	// The exec helper that conforms passes the two checks that need a process.
@@ -212,5 +261,61 @@ func TestChecksAreDocumented(t *testing.T) {
 	}
 	if !slices.Equal(documented, kit) {
 		t.Errorf("docs/plugins.md lists %v, the kit runs %v", documented, kit)
+	}
+}
+
+// A protocol error in a call the automatic checks make (here the fetch) is the
+// parser's too: the parser verdict is read after every call.
+func TestParserCoversTheAutomaticCalls(t *testing.T) {
+	src := `
+def spec(r):
+    return {"title": "Wiki", "description": "d", "shapes": ["feed"], "verbs": ["spec", "check", "list", "fetch"], "settings": {}, "env": []}
+def check(r):
+    return {"ok": True}
+def lst(r):
+    return {"entries": [{"key": "a", "title": "A", "revision": "1", "change": "added"}], "next_cursor": "c1"}
+def f(r):
+    return {"contents": {}}
+recipe("wiki", lst, spec = spec, check = check, fetch = f)
+`
+	res := Run(context.Background(), starInput(t, src, "feed", scenario()))
+	if status(res, "parser") != Fail || status(res, "fetch") != Fail {
+		t.Errorf("%+v", res)
+	}
+	// And the order of the report is the order of Checks.
+	var got []string
+	for _, r := range res {
+		if !strings.HasPrefix(r.Check, "step") {
+			got = append(got, r.Check)
+		}
+	}
+	var want []string
+	for _, c := range Checks {
+		want = append(want, c.Name)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("report order %v, want %v", got, want)
+	}
+}
+
+// The absolute tests/ folder a {tests} expansion gives is a path of the author's
+// own folder, not a credential: a recipe that reads fixtures through it passes
+// the secrets check, while a real test credential is still watched.
+func TestSecretsCheckIgnoresTheTestsPath(t *testing.T) {
+	dir := t.TempDir()
+	doc := "env:\n  TOKEN: tok-secret-value\n  ROOT: \"{tests}/fixtures\"\nsteps:\n  - verb: list\n"
+	if err := os.WriteFile(filepath.Join(dir, "wiki.yaml"), []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sc, err := ReadFile(dir, "wiki")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := "def lst(r):\n    return {\"entries\": [{\"key\": \"a\", \"title\": env.get(\"ROOT\"), \"revision\": \"1\", \"change\": \"added\"}], \"next_cursor\": \"c\"}\nrecipe(\"wiki\", lst)\n"
+	in := starInput(t, src, "feed", sc)
+	in.Star.Env["ROOT"] = "CONFORMANCE_TEST_ROOT"
+	in.Permissions.Env = append(in.Permissions.Env, "ROOT")
+	if got := status(Run(context.Background(), in), "secrets"); got != Pass {
+		t.Errorf("secrets: %s", got)
 	}
 }

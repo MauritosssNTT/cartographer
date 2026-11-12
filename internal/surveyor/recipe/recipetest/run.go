@@ -53,8 +53,14 @@ type run struct {
 	spec   *recipe.Spec
 	lists  []listed
 	next   string
-	proto  []string
-	seen   [][2]string // where, text
+	// proto is every protocol_error a verb call ended in, whichever call it was
+	// (the steps and the automatic calls), except the steps that expect one.
+	proto []protoErr
+	// label prefixes what a protocol error names ("step 2 ", "second listing ").
+	label string
+	// expectProto is set while a step that expects a protocol_error runs.
+	expectProto bool
+	seen        [][2]string // where, text
 }
 
 type outcome struct {
@@ -207,6 +213,9 @@ func (x *run) call(ctx context.Context, stage, verb, cursor string, keys []strin
 	}
 	if o.err != nil {
 		x.note(verb+" error", o.err.Error())
+		if code(o.err) == recipe.CodeProtocolError && !x.expectProto {
+			x.proto = append(x.proto, protoErr{classOf(verb, o.err), x.label + verb + ": " + o.err.Error()})
+		}
 	}
 	return o
 }
@@ -231,10 +240,9 @@ func (x *run) steps(ctx context.Context) {
 		if cursor == "@next" {
 			cursor = x.next
 		}
+		x.label, x.expectProto = fmt.Sprintf("step %d ", i+1), s.Expect.Error == recipe.CodeProtocolError
 		o := x.call(ctx, s.Stage, s.Verb, cursor, s.Request.Keys)
-		if o.err != nil && code(o.err) == recipe.CodeProtocolError && s.Expect.Error != recipe.CodeProtocolError {
-			x.proto = append(x.proto, fmt.Sprintf("step %d %s: %v", i+1, s.Verb, o.err))
-		}
+		x.label, x.expectProto = "", false
 		if s.Verb == "list" && o.err == nil {
 			x.lists = append(x.lists, listed{cursor, s.Stage, s.Request.Cursor == "@next", o})
 			x.next = o.next

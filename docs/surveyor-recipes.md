@@ -366,7 +366,7 @@ elif verb == "list":
             print(json.dumps({"delete": {"key": p["id"]}}))
             continue
         print(json.dumps({"entry": {
-            "key": p["id"], "title": p["title"], "revision": p["version"],
+            "key": p["id"], "title": p["title"], "revision": str(p["version"]),
             "change": "added" if p["version"] == 1 else "modified",
             "locator": "https://wiki.example.com/pages/" + p["id"],
         }}))

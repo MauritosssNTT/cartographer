@@ -37,6 +37,11 @@ type Scenario struct {
 	// HTTP are the recorded exchanges of a Starlark recipe's http.request.
 	HTTP  []Recording `yaml:"http"`
 	Steps []Step      `yaml:"steps"`
+
+	// fixturePaths are the env names whose value holds {tests}: a path the
+	// author's own folder gave, not a credential, so the secrets check does not
+	// watch it.
+	fixturePaths map[string]bool
 }
 
 // Source is the Source the recipe is asked about.
@@ -116,6 +121,12 @@ func ReadFile(dir, name string) (*Scenario, error) {
 	}
 	abs, _ := filepath.Abs(dir)
 	for k, v := range sc.Env {
+		if strings.Contains(v, "{tests}") {
+			if sc.fixturePaths == nil {
+				sc.fixturePaths = map[string]bool{}
+			}
+			sc.fixturePaths[k] = true
+		}
 		sc.Env[k] = strings.ReplaceAll(v, "{tests}", abs)
 	}
 	for i := range sc.HTTP {

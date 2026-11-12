@@ -353,14 +353,16 @@ with the reason); the steps of the scenario print as `step N <verb>`.
 | Check | What it holds the recipe to |
 |---|---|
 | `spec` | spec is valid, declares `spec`, `check` and `list`, and its `env` and `settings` are within what the manifest declares |
-| `parser` | no verb call ended in `protocol_error`: every output line passes the production parser and its caps |
-| `entries` | keys are unique, a feed entry has a revision, `change` is `added` or `modified` |
+| `parser` | no verb call (the steps and the automatic calls alike) ended in a `protocol_error` other than the entry and system rules below: every output line passes the production parser and its caps |
+| `entries` | the production parser accepted every listing's entries: keys present and unique, a feed entry has a title and a revision, `change` is `added` or `modified` (the check reads the parser's `protocol_error`, it does not judge the entries again) |
 | `repeatable` | listing twice with the same cursor and fixtures gives the same entries and cursor |
 | `incremental` | a listing from the returned cursor does not re-emit an entry whose revision did not change (needs a list step with `cursor: "@next"`; skipped otherwise) |
-| `system` | a system recipe's `check` answers `read_only`, and its list ends with an empty cursor and has no deletes |
+| `system` | a system recipe's `check` answers `read_only`, and the parser accepted its list: it ends with an empty cursor and has no deletes |
 | `fetch` | `fetch` answers every key it is asked (skipped when it is not declared or every entry came with content) |
 | `protocol` | an exec script exits 64 with no output on an unknown verb and on another protocol number (skipped for a Starlark recipe) |
 | `secrets` | no `env` test value of 4 bytes or more appears in an entry, a content or an error detail |
+
+`examples/plugin-recipe` is a Starlark recipe with a recorded scenario that passes every check that applies to it (it is run by a Go test): copy it as a starting point.
 
 The list lives in `recipetest.Checks` and a test compares it with this table by name, so a check is documented in the
 change that adds it.
