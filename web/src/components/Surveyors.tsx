@@ -1,7 +1,8 @@
-import { Fragment, useEffect, useState } from "react";
-import { fetchAllSources, fetchComponents, fetchFeeds, fetchMaintenanceSummary } from "../api/client";
-import type { ComponentRow, FeedRow, MaintenanceSummary, ReplicaRow, SourceEntry } from "../api/types";
+import { Fragment, useEffect, useRef, useState } from "react";
+import { ApiError, fetchAllSources, fetchComponents, fetchFeeds, fetchMaintenanceSummary } from "../api/client";
+import type { ComponentRow, FeedRow, MaintenanceSummary, ReplicaRow } from "../api/types";
 import { expectedSilent } from "../lib/health";
+import { serverNow } from "../lib/serverclock";
 import { PageSection } from "./Page";
 
 /** A surveyor that stopped beating leaves the page within this, whatever the live counter does. */
@@ -74,36 +75,40 @@ interface SurveyorAlarm {
   at?: string;
 }
 
+/** What a server or reported alarm code says, in words. Unknown codes are shown as their code. */
+const ALARM_TEXT: Record<string, string> = {
+  silent: "is expected and has not reported",
+  degraded: "is reporting fewer replicas than expected",
+  protocol_skew: "has a replica on another protocol version",
+  feed_failing: "has a feed that fails",
+  auth_refused: "was refused by the server",
+  model_unreachable: "cannot reach its model",
+};
+
 /**
- * The alarms of the Surveyors that concern the KB: an expected one that is
- * silent or short of replicas, one whose budget is spent (once per replica),
- * and the alarms a Surveyor reported or the server raised. Times are the
- * server's (`received_at`, `last_seen_at`), never one a Surveyor declared. A
- * reported alarm of another KB is not shown here (its detail is free text).
+ * The alarms of the Surveyors that concern the KB, from one source: the
+ * `alarms` of the components read (the server's own silent, degraded and
+ * protocol-skew alarms, and the ones a Surveyor reported), plus a replica whose
+ * budget is spent (once per replica; the read carries no alarm for it).
+ * Times are the server's (`received_at`, or `since` of a server alarm), never
+ * one a Surveyor declared. A reported alarm of another KB is left out (its
+ * detail is free text).
  */
 export function surveyorAlarms(components: ComponentRow[], kb: string): SurveyorAlarm[] {
   const out: SurveyorAlarm[] = [];
-  for (const c of expectedSilent(components)) {
-    out.push({
-      key: `silent/${c.name}`,
-      cause:
-        c.state === "silent"
-          ? `Surveyor ${c.name} is expected and has not reported`
-          : `Surveyor ${c.name} is expected to run ${c.min_replicas} replicas and ${c.replicas.length} ${c.replicas.length === 1 ? "is" : "are"} reporting`,
-      at: c.state === "silent" ? (c.last_seen_at ?? undefined) : undefined,
-    });
-  }
   for (const c of components.filter((c) => c.kind === "surveyor")) {
-    for (const r of c.replicas.filter((r) => r.state === "budget_exhausted")) {
-      out.push({ key: `budget/${c.name}/${r.id}`, cause: `Surveyor ${c.name} · ${r.id} has spent its budget`, at: undefined });
-    }
     for (const [i, a] of c.alarms.entries()) {
       if (a.kb !== undefined && a.kb !== "" && a.kb !== kb) continue;
+      const what = ALARM_TEXT[a.code] ?? a.code.replace(/_/g, " ");
+      const detail = a.origin === "server" ? [a.source, a.detail] : a.kb ? [a.source, a.detail] : [];
       out.push({
         key: `alarm/${c.name}/${i}/${a.code}`,
-        cause: `Surveyor ${c.name}: ${a.code}${a.kb && a.detail ? ` - ${a.detail}` : ""}`,
-        at: a.received_at,
+        cause: `Surveyor ${c.name} ${what}${detail.filter((t) => t && t.trim()).length ? ` (${detail.filter((t) => t && t.trim()).join(": ")})` : ""}`,
+        at: a.received_at ?? (a.origin === "server" ? a.since : undefined),
       });
+    }
+    for (const r of c.replicas.filter((r) => r.state === "budget_exhausted")) {
+      out.push({ key: `budget/${c.name}/${r.id}`, cause: `Surveyor ${c.name} · ${r.id} has spent its budget` });
     }
   }
   return out;
@@ -125,7 +130,7 @@ function useFeeds(kb: string, live: number): FeedRow[] {
 
 const day = (iso?: string) => (iso ? iso.slice(0, 10) : "");
 
-export function age(iso: string, now = Date.now()): string {
+export function age(iso: string, now = serverNow()): string {
   const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
   if (Number.isNaN(s)) return "";
   if (s < 90) return "just now";
@@ -280,31 +285,21 @@ export function MaintainedBy({
  * server caps the list at 500: a count at the cap says "500 or more".
  */
 export function SourcesBlock({ kb, live = 0 }: { kb: string | null; live?: number }) {
-  const [sources, setSources] = useState<SourceEntry[] | null>(null);
-  // Another KB shows nothing of the previous one while its answer is pending.
-  useEffect(() => {
-    setSources(null);
-  }, [kb]);
-  useEffect(() => {
-    if (!kb) return;
-    const controller = new AbortController();
-    fetchAllSources(kb, controller.signal)
-      .then((res) => setSources(Array.isArray(res?.sources) ? res.sources : []))
-      .catch((err: unknown) => {
-        if (!(err instanceof DOMException && err.name === "AbortError")) setSources(null);
-      });
-    return () => controller.abort();
-  }, [kb, live]);
-  const feeds = useFeedsOf(kb, live);
+  const sources = useResilient(kb, live, (k, signal) => fetchAllSources(k, signal).then((r) => (Array.isArray(r?.sources) ? r.sources : [])));
+  const feeds = useResilient(kb, live, (k, signal) => fetchFeeds(k, signal).then((r) => (Array.isArray(r?.feeds) ? r.feeds : []))) ?? [];
   if (!kb || sources === null) return null;
-  const count = (status: string) => sources.filter((s) => s.ingest_status === status).length;
-  const capped = sources.length >= 500;
-  const n = (status: string) => `${count(status)}${capped ? "+" : ""}`;
+  const capped = sources.length >= SOURCE_CAP;
+  // A partial list proves nothing about a status it does not show: "0+" would say more than is known.
+  const n = (status: string) => {
+    const c = sources.filter((s) => s.ingest_status === status).length;
+    return capped ? (c === 0 ? "—" : `${c}+`) : String(c);
+  };
   return (
-    <PageSection title="Sources" id="settings-sources" count={sources.length}>
+    <PageSection title="Sources" id="settings-sources" count={capped ? undefined : sources.length}>
       <p className="page-note">
-        The Sources registered in {kb}, by ingest status, and the feeds whose last poll failed. A Surveyor&apos;s recipes
-        and connectors are not listed: it reports its typed values only.
+        The Sources registered in {kb}, by ingest status, and the feeds whose last poll failed
+        {capped ? `; the server lists at most ${SOURCE_CAP}, so these counts are lower bounds` : ""}. A Surveyor&apos;s
+        recipes and connectors are not listed: it reports its typed values only.
       </p>
       <ul className="surveyors__list" aria-label="Sources by status">
         {["pending", "ingested", "skipped"].map((status) => (
@@ -329,20 +324,54 @@ export function SourcesBlock({ kb, live = 0 }: { kb: string | null; live?: numbe
   );
 }
 
-function useFeedsOf(kb: string | null, live: number): FeedRow[] {
-  const [rows, setRows] = useState<FeedRow[]>([]);
+/** The server's cap on a Source list. */
+const SOURCE_CAP = 500;
+
+/** Back-off of a read that failed for a reason that may pass (a 5xx, the network): this, doubled, up to a minute. */
+export const retry = { baseMs: 5000, maxMs: 60_000 };
+
+/**
+ * A KB-scoped optional read. Another KB shows nothing of the previous one. A
+ * 404 (a narrowed principal, an older server) is "nothing"; any other failure
+ * keeps the last good value and tries again with back-off, so a restart or a
+ * blip never leaves the block empty for good.
+ */
+function useResilient<T>(kb: string | null, live: number, load: (kb: string, signal: AbortSignal) => Promise<T>): T | null {
+  const [value, setValue] = useState<T | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const fails = useRef(0);
+  const loader = useRef(load);
+  loader.current = load;
   useEffect(() => {
-    setRows([]);
+    setValue(null);
+    fails.current = 0;
+  }, [kb]);
+  useEffect(() => {
     if (!kb) return;
     const controller = new AbortController();
-    fetchFeeds(kb, controller.signal)
-      .then((res) => setRows(Array.isArray(res?.feeds) ? res.feeds : []))
+    let timer: number | undefined;
+    loader
+      .current(kb, controller.signal)
+      .then((v) => {
+        fails.current = 0;
+        setValue(v);
+      })
       .catch((err: unknown) => {
-        if (!(err instanceof DOMException && err.name === "AbortError")) setRows([]);
+        if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) return;
+        if (err instanceof ApiError && err.status === 404) {
+          setValue(null);
+          return;
+        }
+        const delay = Math.min(retry.baseMs * 2 ** fails.current, retry.maxMs);
+        fails.current += 1;
+        timer = window.setTimeout(() => setAttempt((n) => n + 1), delay);
       });
-    return () => controller.abort();
-  }, [kb, live]);
-  return rows;
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [kb, live, attempt]);
+  return value;
 }
 
 /**
@@ -368,11 +397,14 @@ export function SurveyorRunsSection({
     .flatMap((c) => c.runs.filter((r) => r.kb === kb).map((r) => ({ ...r, perimeter: c.name })))
     .sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at))
     .slice(0, 20);
+  // A replica's last run is not per KB: the section exists only when this KB has runs of its own,
+  // and the replica rows are labelled as any KB's.
+  if (runs.length === 0) return null;
   const lasts = surveyors.flatMap((c) => c.replicas.filter((r) => r.last_run).map((r) => ({ perimeter: c.name, replica: r })));
-  if (runs.length === 0 && lasts.length === 0) return null;
-  const authorOf = (id: string) => authors.find((a) => a.startsWith("surveyor/") && a.includes(id));
+  // The exact path segment: w-1 is not w-10.
+  const authorOf = (id: string) => authors.find((a) => a.startsWith("surveyor/") && a.split("/").slice(1).includes(id));
   return (
-    <PageSection title="Surveyor runs" id="activity-surveyor-runs" count={runs.length + lasts.length}>
+    <PageSection title="Surveyor runs" id="activity-surveyor-runs" count={runs.length}>
       <ul className="surveyors__list" aria-label="Surveyor runs">
         {runs.map((r) => (
           <li key={`${r.perimeter}/${r.run_id}`} className="surveyors__row" data-tone={r.outcome === "ok" ? undefined : "error"}>
@@ -396,7 +428,7 @@ export function SurveyorRunsSection({
             <span className="surveyors__name">
               {perimeter} · {r.id}
             </span>
-            <span>last run</span>
+            <span>last run (any KB)</span>
             <span className="surveyors__meta">
               {r.last_run!.units_done} units, {r.last_run!.commits} commits, {r.last_run!.tokens_spent} tokens
             </span>

@@ -1,3 +1,4 @@
+import { setServerNow } from "../lib/serverclock";
 import type {
   Artifact,
   ArtifactList,
@@ -286,7 +287,10 @@ export function fetchMaintenanceReview(kb: string, signal?: AbortSignal): Promis
 
 /** The components that concern this KB (D1901); 404 for a caller that does not see the whole KB. */
 export function fetchComponents(kb: string, signal?: AbortSignal): Promise<ComponentsResponse> {
-  return get<ComponentsResponse>(`/kbs/${encodeURIComponent(kb)}/components`, signal);
+  return get<ComponentsResponse>(`/kbs/${encodeURIComponent(kb)}/components`, signal).then((res) => {
+    setServerNow(res?.server?.now);
+    return res;
+  });
 }
 
 /** The Sources whose last poll failed, newest check first. */
