@@ -79,7 +79,7 @@ func (l *Log) EventsAfter(cursor string, limit int) (events []Entry, gap bool, e
 	if limit <= 0 {
 		return nil, false, nil
 	}
-	changed := errors.New("audit: the log kept rotating while it was read")
+	changed := errRotating // the reason the last attempt was read again
 	for attempt := 0; attempt < 3; attempt++ {
 		snap, err := l.snapshotAfter()
 		if err != nil {
@@ -94,20 +94,25 @@ func (l *Log) EventsAfter(cursor string, limit int) (events []Entry, gap bool, e
 			return nil, false, err
 		}
 		if len(active) > 0 && active[len(active)-1].Hash != snap.lastHash {
-			continue // rotated between the snapshot and the read
+			changed = errRotating // rotated between the snapshot and the read
+			continue
 		}
 		events, gap, err := eventsAfter(snap, active, cursor, limit)
 		if errors.Is(err, errSegmentChanged) {
+			changed = errRotating
 			continue
 		}
 		return events, gap, err
 	}
-	// Still changed after the retries: a broken active file rather than a
-	// rotation, and the error names it.
+	// Still changed after the retries: the last attempt's reason, which names
+	// the file when the active one does not parse.
 	return nil, false, changed
 }
 
-var errSegmentChanged = errors.New("audit: segment changed during read")
+var (
+	errSegmentChanged = errors.New("audit: segment changed during read")
+	errRotating       = errors.New("audit: the log kept rotating while it was read")
+)
 
 // eventsAfter walks the timeline: each checkpointed segment (its entries when
 // the file is retained, nothing when it is not), then the active entries.
