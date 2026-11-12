@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hosted-check.sh — `make check-run` on a GitHub-hosted runner (CHECK_MAKE=./scripts/hosted-check.sh).
 #
-#   hosted-check.sh check-run CHECK_PKGS="<list>" [CHECK_E2E=1]
+#   hosted-check.sh check-run CHECK_PKGS="<list>" [CHECK_WIN_PKGS="<list>"] [CHECK_E2E=1]
 #
 # What `make check` hands to CHECK_MAKE. The worktree state (uncommitted changes of tracked files
 # and staged new files; never untracked ones) becomes a temporary commit on top of HEAD, built with plumbing
@@ -10,6 +10,11 @@
 # failing log excerpt, and the branch is deleted on every exit path. A check/* branch is never a
 # PR and never lands. Pushing needs write access: a contributor's push is refused (exit 75) and
 # the check runs locally.
+#
+# Two legs run in parallel in the dispatched run: Linux (`make check-run`) and, when
+# CHECK_WIN_PKGS is not empty, Windows (the sharded `go test` of the packages the train gate's
+# Windows leg covers: `make check` computes them with `affected-pkgs.sh --code`). Both are read
+# from the one poll of the run; a red check names the red leg(s) and prints each one's log excerpt.
 #
 # Exit: 0 green, 1 red or cancelled or timed out, 2 bad call, 75 GitHub cannot run it (gh missing
 # or unauthenticated, push or dispatch refused, run never appeared, network lost). Never 75 for a
@@ -28,7 +33,7 @@
 #   HOSTED_CHECK_TAIL=150         lines of the failed log printed
 set -euo pipefail
 
-usage() { echo "usage: hosted-check.sh check-run [CHECK_PKGS=<packages>] [CHECK_E2E=1]" >&2; exit 2; }
+usage() { echo "usage: hosted-check.sh check-run [CHECK_PKGS=<packages>] [CHECK_WIN_PKGS=<packages>] [CHECK_E2E=1]" >&2; exit 2; }
 note() { echo "hosted-check: $*" >&2; }
 unavailable() { note "$*"; exit 75; }
 
@@ -36,19 +41,23 @@ unavailable() { note "$*"; exit 75; }
 [ "${1:-}" = check-run ] || usage
 shift
 pkgs=
+winpkgs=
 e2e=false
 for a in "$@"; do
   case "$a" in
     CHECK_PKGS=*) pkgs=${a#CHECK_PKGS=} ;;
+    CHECK_WIN_PKGS=*) winpkgs=${a#CHECK_WIN_PKGS=} ;;
     CHECK_E2E=1) e2e=true ;;
     *) usage ;;
   esac
 done
 # Whole-string match (a newline is not in the class), and no word may start with `-`: the list
 # is expanded unquoted by make, where a newline starts a command and `-exec=...` a go test flag.
-[[ "$pkgs" =~ ^[A-Za-z0-9_./\ -]*$ ]] || { note "bad package list"; exit 2; }
-for w in $pkgs; do
-  if [[ "$w" == -* ]]; then note "bad package list: $w looks like a flag"; exit 2; fi
+for list in "$pkgs" "$winpkgs"; do
+  [[ "$list" =~ ^[A-Za-z0-9_./\ -]*$ ]] || { note "bad package list"; exit 2; }
+  for w in $list; do
+    if [[ "$w" == -* ]]; then note "bad package list: $w looks like a flag"; exit 2; fi
+  done
 done
 
 dry=${HOSTED_CHECK_DRY:-}
@@ -110,7 +119,7 @@ fi
 branch=check/$slug-${sha:0:12}
 
 if [ -n "$dry" ]; then
-  note "dry run: would push $sha to $remote $branch and dispatch hosted-check.yml (pkgs='$pkgs' e2e=$e2e)"
+  note "dry run: would push $sha to $remote $branch and dispatch hosted-check.yml (pkgs='$pkgs' win_pkgs='$winpkgs' e2e=$e2e)"
   exit 0
 fi
 
@@ -138,7 +147,7 @@ list_runs() {
 existing=$(list_runs 2>/dev/null) || unavailable "cannot list the runs of $branch"
 before=$(printf '%s\n' "$existing" | sort -n | tail -n 1)
 before=${before:-0}
-gh workflow run hosted-check.yml -R "$repo" --ref "$branch" -f pkgs="$pkgs" -f e2e="$e2e" >/dev/null ||
+gh workflow run hosted-check.yml -R "$repo" --ref "$branch" -f pkgs="$pkgs" -f win_pkgs="$winpkgs" -f e2e="$e2e" >/dev/null ||
   unavailable "cannot dispatch hosted-check.yml on $branch (is it on the default branch?)"
 
 # 7. Find the run.
@@ -153,7 +162,7 @@ note "run $id on $branch"
 # 8. Wait. Back-off: the interval doubles up to poll_max, and the ceiling is elapsed time. The
 # elapsed time is the larger of the wall clock and the sum of the naps (a stubbed sleep in tests).
 timeout=${HOSTED_CHECK_TIMEOUT:-3600}
-last='' fails=0 concl='' slept=0 interval=$poll start=$SECONDS
+last='' fails=0 concl='' jobs='' slept=0 interval=$poll start=$SECONDS
 nap() { sleep "$1"; slept=$((slept + $1)); }
 elapsed() { local e=$((SECONDS - start)); [ "$slept" -le "$e" ] || e=$slept; echo "$e"; }
 # Core quota exhausted: print the seconds to wait for its reset (capped at the time left), else nothing.
@@ -170,14 +179,21 @@ quota_wait() {
   echo "$w"
 }
 while [ "$(elapsed)" -lt "$timeout" ]; do
-  if v=$(gh run view "$id" -R "$repo" --json status,conclusion --jq '.status + " " + .conclusion' 2>/dev/null); then
+  if v=$(gh run view "$id" -R "$repo" --json status,conclusion,jobs \
+    --jq '.status + " " + .conclusion + " " + ([.jobs[]? | .name + "=" + .conclusion] | join(","))' 2>/dev/null); then
     fails=0
     status=${v%% *}
     if [ "$status" != "$last" ]; then
       note "$status ($((SECONDS / 60))m$(printf %02d $((SECONDS % 60)))s)"
       last=$status
     fi
-    if [ "$status" = completed ]; then done_=1; concl=${v#* }; break; fi
+    if [ "$status" = completed ]; then
+      done_=1
+      # "<conclusion> <job>=<conclusion>,...": the legs come from the same poll as the verdict.
+      rest=${v#* } concl=${rest%% *} jobs=
+      case "$rest" in *\ *) jobs=${rest#* } ;; esac
+      break
+    fi
   elif w=$(quota_wait) && [ -n "$w" ]; then
     note "GitHub API quota exhausted: waiting ${w}s for its reset"
     nap "$w"
@@ -199,8 +215,22 @@ case "$concl" in
   success) echo "check: OK (hosted-check run $id)"; exit 0 ;;
   cancelled) note "run $id was cancelled (a newer check of the same branch supersedes it, or it was cancelled by hand)"; exit 1 ;;
   *)
-    gh run view "$id" -R "$repo" --log-failed 2>&1 | tail -n "${HOSTED_CHECK_TAIL:-150}" >&2 || true
-    note "run $id: $concl"
+    tail_n=${HOSTED_CHECK_TAIL:-150}
+    log=$(gh run view "$id" -R "$repo" --log-failed 2>&1) || true
+    red='' shown=0
+    # A failed log line is "<job>\t<step>\t<text>": each red leg gets its own excerpt.
+    IFS=, read -r -a legs <<<"$jobs"
+    for leg in ${legs[@]+"${legs[@]}"}; do
+      name=${leg%%=*} c=${leg#*=}
+      case "$c" in success | skipped | '') continue ;; esac
+      case "$name" in check) label=Linux ;; windows) label=Windows ;; *) label=$name ;; esac
+      red=${red:+$red, }$label
+      excerpt=$(printf '%s\n' "$log" | awk -F'\t' -v j="$name" '$1 == j' | tail -n "$tail_n")
+      note "--- $label leg ($name): $c"
+      if [ -n "$excerpt" ]; then printf '%s\n' "$excerpt" >&2; shown=1; fi
+    done
+    [ "$shown" = 1 ] || printf '%s\n' "$log" | tail -n "$tail_n" >&2
+    note "run $id: $concl${red:+ (red: $red)}"
     exit 1
     ;;
 esac

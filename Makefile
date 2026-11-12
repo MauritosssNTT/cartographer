@@ -245,12 +245,17 @@ gate: fmt-check vet test race ## Everything that must be green before a PR is op
 # Go builds: the check then exits 75 itself.
 CHECK_MAKE ?= $(MAKE)
 CHECK_LOCAL_FALLBACK ?= 1
+# Not empty when CHECK_MAKE is scripts/hosted-check.sh, the only runner with a Windows leg (#1935):
+# the packages of the train gate's Windows leg (affected-pkgs.sh --code) then travel to it as
+# CHECK_WIN_PKGS. Any other CHECK_MAKE (a build host's wrapper) receives the arguments it always did.
+CHECK_WIN_LEG = $(findstring hosted-check.sh,$(CHECK_MAKE))
 check: ## Fast tier: fmt-check, vet and the tests of the packages this branch affects (CHECK_MAKE runs them elsewhere; E2E=1 adds the e2e scenarios)
 	@changed=$$(scripts/affected-pkgs.sh --changed) || { echo "check: cannot compute the changed paths (see above): not running a check that would test nothing" >&2; exit 1; }; \
 	pkgs=$$(printf '%s\n' "$$changed" | scripts/affected-pkgs.sh) || { echo "check: cannot compute the affected packages" >&2; exit 1; }; \
 	pkgs=$$(printf '%s' "$$pkgs" | tr '\n' ' '); \
 	echo "check: $${pkgs:-no Go package affected}"; \
-	rc=0; $(CHECK_MAKE) check-run CHECK_PKGS="$$pkgs" $(if $(E2E),CHECK_E2E=1) || rc=$$?; \
+	$(if $(CHECK_WIN_LEG),win=$$(printf '%s\n' "$$changed" | scripts/affected-pkgs.sh --code) || { echo "check: cannot compute the Windows packages (see above)" >&2; exit 1; }; win=$$(printf '%s' "$$win" | tr '\n' ' ');) \
+	rc=0; $(CHECK_MAKE) check-run CHECK_PKGS="$$pkgs" $(if $(CHECK_WIN_LEG),CHECK_WIN_PKGS="$$win") $(if $(E2E),CHECK_E2E=1) || rc=$$?; \
 	if [ "$$rc" = 75 ] && [ "$(CHECK_LOCAL_FALLBACK)" = 0 ]; then echo "check: the build host is unavailable and CHECK_LOCAL_FALLBACK=0: not running here" >&2; exit 75; \
 	elif [ "$$rc" = 75 ]; then echo "check: the build host is unavailable, running here"; $(MAKE) check-run CHECK_PKGS="$$pkgs" $(if $(E2E),CHECK_E2E=1); \
 	else exit $$rc; fi
