@@ -100,16 +100,17 @@ func samePath(a, b string) bool {
 // guardScheduler refuses a scheduler command under a sandboxed HOME. The error
 // names what was refused (the command, whatever the caller was doing with it:
 // registering a unit, probing a task, reading a file through interop) and says
-// only what holds for every command in schedulerCommands, including loginctl
-// and the wsl.exe/powershell.exe of a read: it was not run, so nothing outside
-// this HOME was changed. What the caller's operation did before the refusal
+// only what the guard knows: the command was not run. It does not say what
+// else was or was not changed, because the guard cannot know it (an install
+// creates an explicit --data directory, which can lie outside HOME, before its
+// first scheduler command). What the caller's operation did before the refusal
 // (an install wrote its unit files) is the caller's to add: sandboxRefusal.
 func guardScheduler(name string) error {
 	if !schedulerCommands[filepath.Base(name)] {
 		return nil
 	}
 	if sandboxed, env, acct := sandboxedHome(); sandboxed {
-		return fmt.Errorf("%w (HOME=%s, account home %s): %s was not run, so nothing outside this HOME was changed", errSandboxHome, env, acct, filepath.Base(name))
+		return fmt.Errorf("%w (HOME=%s, account home %s): %s was not run", errSandboxHome, env, acct, filepath.Base(name))
 	}
 	return nil
 }
