@@ -344,6 +344,9 @@ assert_file_contains "${DIR}/out.txt" "NUL byte"
 printf 'default 3000\n\000\nlaunch 5000\n' > film/max-bytes.txt
 check "a cap line of NUL alone is refused" 1 film/publish.sh caps/film.webp
 assert_file_contains "${DIR}/out.txt" "NUL byte"
+printf '# a\000b\ndefault 3000\n' > film/max-bytes.txt
+check "a NUL byte inside a comment line of the cap file is refused" 1 film/publish.sh caps/film.webp
+assert_file_contains "${DIR}/out.txt" "NUL byte"
 unchanged "a cap file holding a NUL byte"
 git checkout -q film/max-bytes.txt
 rm -r caps

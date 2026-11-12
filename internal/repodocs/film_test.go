@@ -142,12 +142,29 @@ func TestFilmPagesAreTheFilmList(t *testing.T) {
 	}
 	// Each reader of the list refuses a NUL byte in it (bash `read` cuts a line there, the others keep it): a script that
 	// drops the refusal reads another list than the rest.
-	for f, nul := range map[string]string{
-		"film/vite.config.ts": `\u0000`, "film/record.mjs": `\u0000`, "film/render.sh": `'\000'`, "film/publish.sh": `'\000'`,
-	} {
+	for f, nul := range map[string]string{"film/vite.config.ts": `\u0000`, "film/record.mjs": `\u0000`} {
 		if !strings.Contains(readFile(t, root, f), nul) {
 			t.Errorf("%s does not refuse a NUL byte in film/films.txt, as the other readers of the list do", f)
 		}
+	}
+	// The shell scripts define their NUL helper with the same literal, so the definition alone must not satisfy the check:
+	// pin the calls (outside comment lines) and render.sh's own comparison.
+	code := func(f string) string {
+		var b strings.Builder
+		for _, l := range strings.Split(readFile(t, root, f), "\n") {
+			if !strings.HasPrefix(strings.TrimLeft(l, " \t"), "#") {
+				b.WriteString(l + "\n")
+			}
+		}
+		return b.String()
+	}
+	for _, call := range []string{"nonul film/films.txt", "nonul film/max-bytes.txt"} {
+		if !strings.Contains(code("film/publish.sh"), call) {
+			t.Errorf("film/publish.sh does not call `%s`: a NUL byte there would be read as another list or cap than record.mjs reads", call)
+		}
+	}
+	if !regexp.MustCompile(`tr -d '\\000' < film/films\.txt`).MatchString(code("film/render.sh")) {
+		t.Errorf("film/render.sh does not compare film/films.txt with itself minus NUL bytes, as the other readers of the list do")
 	}
 }
 
