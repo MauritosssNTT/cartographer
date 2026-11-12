@@ -238,12 +238,15 @@ describe("useReportCandidates", () => {
     CANDIDATES_REFRESH.ms = 20;
     let calls = 0;
     stubApi({ [LIST]: () => (++calls, json({ candidates: [], destination: "github" })) });
-    const hidden = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
-    renderHook(() => useReportCandidates("kb-a", 0));
-    await waitFor(() => expect(calls).toBe(1));
-    await new Promise((r) => setTimeout(r, 80));
-    expect(calls).toBe(1);
-    hidden.mockRestore();
+    Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
+    try {
+      renderHook(() => useReportCandidates("kb-a", 0));
+      await waitFor(() => expect(calls).toBe(1));
+      await new Promise((r) => setTimeout(r, 80));
+      expect(calls).toBe(1);
+    } finally {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "visible" });
+    }
   });
 
   it("keeps a list already shown through a transient failure", async () => {
