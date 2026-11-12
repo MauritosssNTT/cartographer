@@ -13,7 +13,8 @@ import (
 // with git's "Unable to create index.lock: File exists". It runs only while this
 // process holds the KB's exclusive lock (AcquireProcessLock, without waiting): then no
 // git of this server runs in the clone, so a lock found is a leftover. When another
-// process holds the KB the lock is not ours to judge and nothing is removed. The
+// process holds the KB the lock is not ours to judge: nothing is removed, and one
+// line on stderr says that a lock exists and the check was skipped. The
 // removal is logged with the file's path and age. It is for the server's own start-up,
 // like SweepStaleTempFiles, never for a write: a lock that appears later may belong to a
 // git the operator runs, and the write error names it instead (gitx.indexLockHint).
@@ -21,6 +22,11 @@ import (
 func (k *KB) ClearStaleIndexLock() {
 	release, err := k.AcquireProcessLock(0, "clear a stale index.lock")
 	if err != nil {
+		// Not ours to judge, but not silent either: the leftover stays until the
+		// next start, and a write meanwhile fails on it.
+		if lock := gitx.HasIndexLock(k.Root); lock != "" {
+			fmt.Fprintf(os.Stderr, "cartographer: %s: an index.lock exists at %s and the check was skipped because another process holds the KB\n", k.Root, lock)
+		}
 		return
 	}
 	defer release()

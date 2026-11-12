@@ -1,11 +1,15 @@
 package kb
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/BeppeTemp/cartographer/internal/gitx"
 )
 
 // leaveIndexLock plants the index.lock a killed git leaves, an hour old.
@@ -98,5 +102,82 @@ func TestClearStaleIndexLock_LeavesTheLockWhileAnotherHolderHasTheKB(t *testing.
 
 	if _, err := os.Lstat(lock); err != nil {
 		t.Fatalf("the lock was removed while the KB was held elsewhere: %v", err)
+	}
+}
+
+// The skip is not silent: the leftover stays until the next start, so one line says
+// that a lock exists and why it was not judged. Not parallel: it swaps os.Stderr.
+func TestClearStaleIndexLock_LogsTheSkipWhenAnotherHolderHasTheKB(t *testing.T) {
+	if !haveGit() {
+		t.Skip("git not in PATH")
+	}
+	k := mustInitKB(t)
+	lock := leaveIndexLock(t, k)
+	release, err := k.AcquireProcessLock(time.Second, "other process")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = w
+	k.ClearStaleIndexLock()
+	os.Stderr = saved
+	w.Close()
+	logged, _ := io.ReadAll(r)
+
+	for _, want := range []string{"index.lock", "skipped", "another process holds the KB", k.Root} {
+		if !strings.Contains(string(logged), want) {
+			t.Errorf("the log lacks %q:\n%s", want, logged)
+		}
+	}
+	if _, err := os.Lstat(lock); err != nil {
+		t.Fatalf("the lock was removed: %v", err)
+	}
+
+	// Without a lock, a held KB logs nothing.
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	r, w, _ = os.Pipe()
+	os.Stderr = w
+	k.ClearStaleIndexLock()
+	os.Stderr = saved
+	w.Close()
+	if logged, _ := io.ReadAll(r); len(logged) != 0 {
+		t.Errorf("logged with no lock present: %s", logged)
+	}
+}
+
+// A write on a KB with a remote first rebases onto what the remote has gained: with a
+// leftover lock git words that "could not detach HEAD", and it was reported as a
+// conflict with no files. The error names the lock.
+func TestSyncIn_LeftoverIndexLockIsNamedNotReportedAsAConflict(t *testing.T) {
+	t.Parallel()
+	if !haveGit() {
+		t.Skip("git not in PATH")
+	}
+	k, bare := cleanRemoteKB(t)
+	writeAndCommit(t, k, "data/local.md")
+	pushCommitToBare(t, bare, "main", "from-remote.md")
+	lock := leaveIndexLock(t, k)
+
+	_, err := k.SyncIn()
+	if err == nil {
+		t.Fatal("SyncIn succeeded with an index.lock in the clone")
+	}
+	var rce *gitx.RebaseConflictError
+	if errors.As(err, &rce) {
+		t.Fatalf("a leftover lock was reported as a rebase conflict: %v", err)
+	}
+	if !strings.Contains(filepath.ToSlash(err.Error()), filepath.ToSlash(lock)) || !strings.Contains(err.Error(), "if no git process runs in") {
+		t.Errorf("the error does not name the lock and the remedy:\n%v", err)
+	}
+	if _, statErr := os.Lstat(lock); statErr != nil {
+		t.Errorf("the lock was removed: %v", statErr)
 	}
 }

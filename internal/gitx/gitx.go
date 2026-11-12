@@ -998,6 +998,12 @@ func PullRebaseAutostash(dir, remote, branch string, env ...string) error {
 	if err == nil {
 		return nil
 	}
+	// A leftover index.lock is not a conflict, though git words it "error: could
+	// not detach HEAD": name the lock before the conflict markers are read.
+	if hint := indexLockHint(dir, out); hint != "" {
+		abortRebaseIfStarted(dir)
+		return fmt.Errorf("git pull --rebase --autostash %s %s: %w: %s%s", RedactRemoteURL(remote), branch, redactedErr(err, remote), RedactRemoteText(out, remote), hint)
+	}
 	// Detect rebase conflict: output contains "CONFLICT" or "rebase" stall markers.
 	if strings.Contains(out, "CONFLICT") ||
 		strings.Contains(out, "could not apply") ||
@@ -1190,6 +1196,10 @@ func RebaseOntoAutostash(dir, remote, branch string, env ...string) error {
 	out, err := runGitEnv(dir, env, "rebase", "--autostash", target)
 	if err == nil {
 		return nil
+	}
+	if hint := indexLockHint(dir, out); hint != "" {
+		abortRebaseIfStarted(dir)
+		return fmt.Errorf("git rebase --autostash %s: %w: %s%s", target, err, out, hint)
 	}
 	if strings.Contains(out, "CONFLICT") || strings.Contains(out, "could not apply") || strings.Contains(out, "error: could not") {
 		files, _ := UnmergedFiles(dir)
@@ -1447,7 +1457,7 @@ func HeadSHAAt(dir, ref string) (string, error) {
 func ResetHardTo(dir, ref string, env ...string) error {
 	out, err := runGitEnv(dir, env, "reset", "--hard", "--end-of-options", ref)
 	if err != nil {
-		return fmt.Errorf("git reset --hard %s: %w: %s", ref, err, out)
+		return fmt.Errorf("git reset --hard %s: %w: %s%s", ref, err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
@@ -1585,7 +1595,7 @@ func MergeNoCommitNoFFEnv(dir, ref string, env ...string) (conflicted bool, err 
 	if strings.Contains(out, "CONFLICT") || strings.Contains(out, "Automatic merge failed") {
 		return true, nil
 	}
-	return false, fmt.Errorf("git merge --no-commit --no-ff %s: %w: %s", ref, gerr, out)
+	return false, fmt.Errorf("git merge --no-commit --no-ff %s: %w: %s%s", ref, gerr, out, indexLockHint(dir, out))
 }
 
 // MergeAbort aborts an in-progress merge ("git merge --abort").
@@ -1690,7 +1700,7 @@ func StageExecutable(dir string, paths ...string) error {
 	}
 	args := append([]string{"--literal-pathspecs", "add", "--chmod=+x", "--"}, paths...)
 	if out, err := runGit(dir, args...); err != nil {
-		return fmt.Errorf("git add --chmod=+x: %w: %s", err, out)
+		return fmt.Errorf("git add --chmod=+x: %w: %s%s", err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
@@ -2396,7 +2406,7 @@ var noEOL = []string{"-c", "core.autocrlf=false"}
 func StashPushEnv(dir string, env ...string) error {
 	out, err := runGitEnv(dir, env, append(noEOL, "stash", "push")...)
 	if err != nil {
-		return fmt.Errorf("git stash push: %w: %s", err, out)
+		return fmt.Errorf("git stash push: %w: %s%s", err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
@@ -2405,7 +2415,7 @@ func StashPushEnv(dir string, env ...string) error {
 func StashPop(dir string) error {
 	out, err := runGit(dir, append(noEOL, "stash", "pop")...)
 	if err != nil {
-		return fmt.Errorf("git stash pop: %w: %s", err, out)
+		return fmt.Errorf("git stash pop: %w: %s%s", err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
@@ -2496,7 +2506,7 @@ func ShowCommit(dir, sha string) (CommitSummary, error) {
 // conflict it returns an error and leaves the tree for the caller to reset.
 func RevertNoCommit(dir, sha string, env ...string) error {
 	if out, err := runGitEnv(dir, env, "revert", "--no-commit", "--end-of-options", sha); err != nil {
-		return fmt.Errorf("git revert %s: %w: %s", sha, err, strings.TrimSpace(out))
+		return fmt.Errorf("git revert %s: %w: %s%s", sha, err, strings.TrimSpace(out), indexLockHint(dir, out))
 	}
 	return nil
 }
@@ -2545,7 +2555,7 @@ func StagedChanges(dir string) ([]FileChange, error) {
 // clean before the write it undoes (D350). Ignored files are kept.
 func DiscardChanges(dir string) error {
 	if out, err := runGit(dir, "reset", "--hard", "HEAD"); err != nil {
-		return fmt.Errorf("git reset --hard HEAD: %w: %s", err, out)
+		return fmt.Errorf("git reset --hard HEAD: %w: %s%s", err, out, indexLockHint(dir, out))
 	}
 	if out, err := runGit(dir, "clean", "-fd"); err != nil {
 		return fmt.Errorf("git clean -fd: %w: %s", err, out)
@@ -2560,7 +2570,7 @@ func DiscardChanges(dir string) error {
 func StashPushAllEnv(dir string, env ...string) error {
 	out, err := runGitEnv(dir, env, append(noEOL, "stash", "push", "--include-untracked")...)
 	if err != nil {
-		return fmt.Errorf("git stash push --include-untracked: %w: %s", err, out)
+		return fmt.Errorf("git stash push --include-untracked: %w: %s%s", err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
