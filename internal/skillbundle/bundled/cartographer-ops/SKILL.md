@@ -18,9 +18,9 @@ skills, hooks and instructions aligned. Agents use the MCP tools, never the KB f
 | `cartographer setup` | First-time setup of this machine (below). |
 | `cartographer serve` | Running the server in the foreground: development or a custom deployment. |
 | `cartographer service install\|status\|restart\|uninstall` | The native local service. Behind a proxy or internal CA, run `install` from a shell that sets `HTTPS_PROXY`/`SSL_CERT_FILE`: the service does not inherit the shell. |
-| `cartographer kb create <name> --remote <url>` | A first KB in an empty repository (or one holding only a forge's README/LICENSE/.gitignore commit, which is adopted); it becomes `origin`. Any other non-empty remote is refused before the push. `--no-remote` makes a local-only KB: the choice between the two is mandatory. |
-| `cartographer kb clone <remote> [name]` | Mounting an existing KB remote. |
-| `cartographer kb attach <kb> --remote <url>` | Giving a `--no-remote` KB a remote later: an empty repository, or one holding a fast-forward ancestor of the KB. Never forced. |
+| `cartographer kb create <name> --remote <url>` | A first KB in the local service data directory, pushed to an empty repository (or one holding only a forge's README/LICENSE/.gitignore commit, which is adopted); it becomes `origin`. Any other non-empty remote is refused before the push. `--no-remote` makes a local-only KB: the choice between the two is mandatory. |
+| `cartographer kb clone <remote> [name]` | Mounting an existing KB remote in the local service data directory. |
+| `cartographer kb attach <kb> --remote <url>` | Giving a `--no-remote` KB a remote later: an empty repository, or one holding a fast-forward ancestor of the KB. No restart; never forced. |
 | `cartographer kb reauthor <kb> [--apply]` | A push refused because of the commits' author or committer (`references/sync-errors.md`). |
 | `cartographer kb list` | The KBs mounted in the data directory. |
 | `cartographer connect [provider\|all] [--agents a,b]` | Connecting detected agent clients. Never combine `--agents` with the positional provider (the same for `disconnect`). |
@@ -31,7 +31,7 @@ skills, hooks and instructions aligned. Agents use the MCP tools, never the KB f
 | `cartographer version`, `cartographer update check` | The installed version; whether a newer release exists and the upgrade command for this install. |
 
 `connect` probes the server before writing. A reachable server with no KB needs
-`cartographer kb create <name> --remote <url> --restart` (or `cartographer setup --remote <url>`).
+`cartographer kb create <name> --remote <url> --restart` (local service; or `cartographer setup --remote <url>`).
 
 ## First-time setup
 
@@ -84,7 +84,7 @@ A KB syncs exactly when it has a remote, and every write is one commit: neither 
    an authenticated caller also gets `kbs`.
 3. If `ready` is false or no KB is mounted, ask for the git remote the KB belongs to, then run
    `cartographer kb create <name> --remote <url> --restart` (or `cartographer kb clone <url>
-   --restart` if that repository already holds a KB).
+   --restart` if that repository already holds a KB); `--restart` restarts only a local service.
 4. If client artifacts are stale or missing, run `cartographer sync`, then have the user restart
    the affected agent session so it reloads MCP configuration and skills.
 5. If concepts are degraded after a git conflict, use the `cartographer-kb-conflict-resolve`
@@ -156,7 +156,7 @@ or `cartographer status` / `kb_status` can report one (`update available`, `late
   their agent sessions.
 - A remote or cluster server is not yours to upgrade from a client: propose the Kubernetes
   procedure above to whoever operates it.
-- `cartographer client update --check=false` turns the check off. The client never installs a
+- `cartographer client update --check=false` turns the check off (`update_check: false`). The client never installs a
   release by itself. Change it only when the user asks.
 
 ## Never do
