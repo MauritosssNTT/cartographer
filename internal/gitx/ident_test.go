@@ -265,10 +265,11 @@ func TestGlobalIdentBudgetIsPerCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	// 4 includes take 7 commands of 0.3s: more than the budget below if it is
-	// shared, well under it for each command alone.
+	// 4 includes take 8 commands of 0.3s (keys, origin, 4 files, name, email):
+	// about 2.4s in all, more than the budget below if it is shared, while each
+	// command alone stays far under it even when a fresh exec is slow under load.
 	old := globalIdentCallTimeout
-	globalIdentCallTimeout = time.Second
+	globalIdentCallTimeout = 2 * time.Second
 	t.Cleanup(func() { globalIdentCallTimeout = old })
 	if got, perFolder := GlobalIdent(); got != "Home Person <home@example.test>" || perFolder {
 		t.Errorf("GlobalIdent() = %q, %v, want the global identity", got, perFolder)

@@ -212,15 +212,22 @@ func resolveIncludePath(file, value string) (p string, ok bool) {
 // readableFile says whether p is a regular file this process can open. TRAP:
 // os.Stat is not enough. git exits 1 for a file it cannot read (mode 000, a
 // directory) exactly as for a file with no match, so "git found nothing" would
-// be read as "the file sets no identity" for a file git never read.
+// be read as "the file sets no identity" for a file git never read. TRAP: the
+// file is checked regular BEFORE it is opened: an O_RDONLY open of a FIFO (or
+// of a symlink to one, or a device that blocks on open) waits for a writer
+// forever, outside any timeout, and would hang sync and connect.
 func readableFile(p string) bool {
+	before, err := os.Stat(p) // follows links
+	if err != nil || !before.Mode().IsRegular() {
+		return false
+	}
 	f, err := os.Open(p)
 	if err != nil {
 		return false
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	return err == nil && info.Mode().IsRegular()
+	after, err := f.Stat()
+	return err == nil && after.Mode().IsRegular() && os.SameFile(before, after)
 }
 
 // exitCode is the exit status of a failed command, or -1 when it did not run
