@@ -2,11 +2,15 @@
 topic: skills-services-secrets
 ---
 
-# D-new-agent-frontmatter-strict-yaml — An agent's frontmatter gets D212's strict-YAML refusal, and a held agent that does not parse is named
+# D-new-agent-frontmatter-strict-yaml — An agent's frontmatter gets D212's strict-YAML refusal, and an agent that does not parse is named
 
 **Decision.** `contract.ValidateAgentFile` refuses an agent whose frontmatter
 `gopkg.in/yaml.v3` cannot parse, with the parser's error and the advice to quote
-the value, exactly as D212 does for a skill. `BuildManifest` names an agent that
+the value. It is D212's refusal with the approval gate's parser, not D212's own:
+D212 unmarshals the block into a map (`internal/skill/skill.go`), the gate into a
+`yaml.Node`, so a document the gate accepts (a duplicate key, say) is accepted here
+too and one it rejects is refused; one parser for the write and for the gate is the
+point. `BuildManifest` names an agent that
 arrived by git with such a frontmatter in the manifest `issues` (the agent stays in
 the manifest). The block cut and the parse live in one function,
 `contract.FrontmatterYAML`, which `ValidateFrontmatterYAML` and the approval gate
@@ -29,7 +33,8 @@ rewritten.
   anyway.
 - *Exclude the agent from the manifest, as D191 does for a skill.* A held agent is
   already not installed, and excluding it would prune an installed copy the
-  moment its frontmatter breaks; it stays held and keeps what is installed.
+  moment its frontmatter breaks; it stays in the manifest, held by the gate unless its content is approved, and keeps
+  what is installed.
 - *Name the reason only in the sync line.* The author would still write a file no
   client can load; refusing at the boundary comes first, and the issue line covers
   what arrives by git.
@@ -39,5 +44,9 @@ rewritten.
 the provisioning package imports `contract`, not the reverse. A new reader that
 decides something from an agent's or skill's frontmatter with yaml.v3 calls
 `FrontmatterYAML` instead of cutting the block itself. The issue is printed with the
-other manifest issues as a `warning:` line on `sync`; `status` lists it under "not in
-the catalogue", which is not exact for an agent that stays in the manifest.
+other manifest issues as a `warning:` line on `sync` and logged by the server's
+start-up scan; `status` lists it under "not in the catalogue", which is not exact for
+an agent that stays in the manifest. The line does not say the agent is waiting: an
+approval of that content installs it (the approval gate is not tied to the parse), and
+the manifest is built without knowing approvals, so it says a client installs the agent
+only once the content is approved and that quoting the value fixes it.

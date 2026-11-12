@@ -512,11 +512,17 @@ func BuildManifest(bundleFS fs.FS, kbRoots map[string]string, opts BuildOptions)
 				if raw, size, rerr := ReadFileCapped(filepath.Join(agentsDir, e.Name())); rerr == nil && size == 0 {
 					agent.Restriction = ParseAgentRestriction(raw)
 					// A file that came by git skipped artifact_write's check. The
-					// agent stays (and stays held: the approval gate cannot tell
-					// what it declares), but the reason is named.
+					// agent stays (the approval gate cannot tell what it declares,
+					// so a client installs it only once this content is approved),
+					// but the reason is named. The manifest is built without
+					// knowing approvals: the line must hold whatever they are.
 					if yerr := ValidateFrontmatterYAML(raw); yerr != nil {
-						issues = append(issues, fmt.Sprintf("KB %q: agent %q waits for approval: its frontmatter is not valid YAML (%v); "+
-							"it stays held until the frontmatter parses (the usual cause is an unquoted value containing \": \")", kbName, name, yerr))
+						issue := fmt.Sprintf("KB %q: agent %q: its frontmatter is not valid YAML (%v), so the approval gate cannot read what it declares: "+
+							"a client installs it only once this content is approved; quoting the value fixes it (the usual cause is an unquoted value containing \": \")", kbName, name, yerr)
+						issues = append(issues, issue)
+						if opts.SkillDiagnostic != nil {
+							opts.SkillDiagnostic(issue)
+						}
 					}
 				}
 				artifacts = append(artifacts, agent)

@@ -921,7 +921,10 @@ func TestBuildManifest_AgentFrontmatterNotYAML_NamedAsIssue(t *testing.T) {
 	write("bad", "Use when a: b")
 	write("good", `"Use when a: b"`)
 
-	m, err := contract.BuildManifest(nil, map[string]string{"kb-a": kbRoot}, contract.BuildOptions{})
+	var diagnostics []string
+	m, err := contract.BuildManifest(nil, map[string]string{"kb-a": kbRoot}, contract.BuildOptions{
+		SkillDiagnostic: func(msg string) { diagnostics = append(diagnostics, msg) },
+	})
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
@@ -937,9 +940,20 @@ func TestBuildManifest_AgentFrontmatterNotYAML_NamedAsIssue(t *testing.T) {
 	if len(m.Issues) != 1 {
 		t.Fatalf("expected exactly one issue, got %v", m.Issues)
 	}
-	for _, want := range []string{"kb-a", `"bad"`, "not valid YAML", "approval"} {
+	for _, want := range []string{"kb-a", `"bad"`, "not valid YAML", "approved", "quoting"} {
 		if !strings.Contains(m.Issues[0], want) {
 			t.Errorf("issue must contain %q: %s", want, m.Issues[0])
 		}
+	}
+	// The line must not claim the agent is waiting (an approval releases it),
+	// and must not name a command (it reaches sync output).
+	for _, bad := range []string{"waits", "stays held", "cartographer "} {
+		if strings.Contains(m.Issues[0], bad) {
+			t.Errorf("issue must not contain %q: %s", bad, m.Issues[0])
+		}
+	}
+	// serve's start-up scan logs through SkillDiagnostic (cmd/cartographer/serve.go).
+	if len(diagnostics) != 1 || diagnostics[0] != m.Issues[0] {
+		t.Errorf("SkillDiagnostic must receive the issue: %v", diagnostics)
 	}
 }
