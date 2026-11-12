@@ -18,7 +18,7 @@ import {
   setToken,
 } from "./api/client";
 import { filterReportByMap } from "./lib/health";
-import { clusterSnapshot, clustersAvailable, DEFAULT_CLUSTER_THRESHOLD, unfoldKey } from "./lib/clusters";
+import { clusterSnapshot, clustersAvailable, DEFAULT_CLUSTER_THRESHOLD, isClusterID, unfoldKey } from "./lib/clusters";
 import type {
   ArtifactList,
   CheckCatalog,
@@ -41,7 +41,7 @@ import { Releases } from "./components/Releases";
 import { Settings } from "./components/Settings";
 import { AuthPrompt } from "./components/AuthPrompt";
 import { CommandPalette } from "./components/CommandPalette";
-import { GraphView } from "./components/GraphView";
+import { GraphView, type ClusterView, type GraphLevel } from "./components/GraphView";
 import { Inspector } from "./components/Inspector";
 import { LeftRail } from "./components/LeftRail";
 import { useComponents } from "./components/Surveyors";
@@ -815,6 +815,53 @@ export function App() {
     [navigate, narrow],
   );
 
+  // Unfolding adds a cluster to the URL's set, a history entry Back undoes;
+  // folding takes it out. A cluster the server unfolded for the selected
+  // concept (focus) is not in the set: folding it lets the concept go too.
+  const unfoldCluster = useCallback((id: string) => {
+    setView((current) => {
+      if (current.unfold.includes(id)) return current;
+      const next = { ...current, unfold: [...current.unfold, id] };
+      pushView(next);
+      return next;
+    });
+  }, []);
+  const foldCluster = useCallback((id: string) => {
+    setView((current) => {
+      const next = current.unfold.includes(id)
+        ? { ...current, unfold: current.unfold.filter((u) => u !== id) }
+        : { ...current, concept: null };
+      pushView(next);
+      return next;
+    });
+  }, []);
+  const clusterView = useMemo<ClusterView | null>(
+    () =>
+      clusterGraph?.mode === "clusters"
+        ? {
+            clusters: clusterGraph.clusters,
+            edges: clusterGraph.edges.filter((e) => isClusterID(e.source) || isClusterID(e.target)),
+            unfolded: clusterGraph.unfolded,
+            totalNodes: clusterGraph.total_nodes,
+            onUnfold: unfoldCluster,
+            onFold: foldCluster,
+          }
+        : null,
+    [clusterGraph, unfoldCluster, foldCluster],
+  );
+  // The switch is offered only where the KB is above the threshold: below it
+  // there is nothing to cluster.
+  const graphLevel = useMemo<GraphLevel | undefined>(
+    () =>
+      clustersAvailable() && kbTotal !== undefined && kbTotal > clusterThreshold.current
+        ? {
+            mode: view.graph === "nodes" ? "nodes" : "clusters",
+            onChange: (mode) => navigate({ graph: mode === "nodes" ? "nodes" : null }),
+          }
+        : undefined,
+    [kbTotal, view.graph, navigate],
+  );
+
   const expandConcept = useCallback(
     (id: string) => {
       const collection = snapshot?.nodes.find((node) => node.id === id)?.collection;
@@ -1077,7 +1124,7 @@ export function App() {
             </div>
           ) : graphError ? (
             <ErrorState error={graphError} onRetry={() => setReloadKey((k) => k + 1)} />
-          ) : !snapshot || snapshot.nodes.length === 0 ? (
+          ) : !snapshot || (snapshot.nodes.length === 0 && !clusterView?.clusters.length) ? (
             <EmptyState
               title={view.scope ? `${view.scope} is empty` : "This KB has no concepts yet"}
               detail={
@@ -1133,6 +1180,8 @@ export function App() {
                   onSelect={selectConcept}
                   onExpand={expandConcept}
                   onUnavailable={markWebglLost}
+                  clusterView={clusterView}
+                  graphLevel={graphLevel}
                 >
                   {/* A small floating card over the canvas: the legend on the
                       whole KB, never beside an open concept; a Map's contract
@@ -1153,7 +1202,14 @@ export function App() {
                     </div>
                   )}
                   {!readingOpen && !scopedMap && (
-                    <Legend snapshot={snapshot} communities={communities} colorBy={colorBy} onColorBy={setColorBy} />
+                    <Legend
+                      snapshot={snapshot}
+                      communities={communities}
+                      colorBy={colorBy}
+                      onColorBy={setColorBy}
+                      clusters={clusterView?.clusters}
+                      onUnfold={unfoldCluster}
+                    />
                   )}
                 </GraphView>
               )}

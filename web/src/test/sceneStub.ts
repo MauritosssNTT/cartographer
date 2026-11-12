@@ -10,10 +10,14 @@ export interface SetDataCall {
   replace: boolean;
   morph: boolean;
   restore: unknown;
+  /** The links it got, as `source>target`. */
+  links: string[];
 }
 
 export const sceneStub = {
   fail: false,
+  /** The callbacks the last on-screen scene was built with: a test clicks a node through them. */
+  callbacks: null as { onSelect(id: string | null): void } | null,
   created: 0,
   calls: {
     focus: [] as string[],
@@ -46,10 +50,11 @@ export class LivingScene {
   private nodes: { id: string }[] = [];
   private links: { source: string; target: string }[] = [];
   private readonly offscreen: boolean;
-  constructor(_container?: unknown, _callbacks?: unknown, options?: { offscreen?: unknown }) {
+  constructor(_container?: unknown, callbacks?: unknown, options?: { offscreen?: unknown }) {
     if (sceneStub.fail) throw new Error("stub: no WebGL");
     sceneStub.created++;
     this.offscreen = !!options?.offscreen;
+    if (!this.offscreen) sceneStub.callbacks = callbacks as typeof sceneStub.callbacks;
     if (this.offscreen) sceneStub.offline.created++;
   }
   renderFrame(ms: number): void {
@@ -73,6 +78,7 @@ export class LivingScene {
       replace,
       morph: !!opts.morph,
       restore: opts.restore,
+      links: links.map((l) => `${l.source}>${l.target}`),
     });
   }
   setColours(colours: string[]): void {
