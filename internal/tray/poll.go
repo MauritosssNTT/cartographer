@@ -23,10 +23,11 @@ const (
 	// `cartographer status` path, which reads files and asks the server, and
 	// its answer changes only on a sync.
 	AgentsInterval = 5 * time.Minute
-	// AgentsDebounce is the shortest time between the starts of two reads
-	// (Deps.AgentRequests): opening the menu twice in a row, or hovering the
-	// icon, reads the agent clients once now and at most once more when the
-	// window ends.
+	// AgentsDebounce is the shortest time between the start of a read and the
+	// start of one a request (Deps.AgentRequests) asks for: opening the menu
+	// twice in a row, or hovering the icon, reads the agent clients once now
+	// and at most once more when the window ends. The periodic and the
+	// server-came-back reads do not wait for it.
 	AgentsDebounce = 10 * time.Second
 )
 
@@ -168,11 +169,13 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 	// read behind a running one.
 	var lastRead time.Time
 	pending := false // a request came after the newest read was queued
-	reading := func() bool {
+	// inFlight counts the reads running or waiting.
+	inFlight := func() int {
 		mu.Lock()
 		defer mu.Unlock()
-		return queued > completed
+		return queued - completed
 	}
+	reading := func() bool { return inFlight() > 0 }
 	queueRead := func() {
 		pending = false // the read queued now begins after every request so far
 		select {
@@ -218,7 +221,12 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 			poll()
 			servePending()
 		case <-requests:
-			pending = true
+			// One running and one queued behind it (a tick queued it): that
+			// one has not begun, so it begins after this request and answers
+			// it. Remembering the request would read once more for nothing.
+			if inFlight() < 2 {
+				pending = true
+			}
 			servePending()
 		case <-readDone:
 			// A read finished: show it now, not at the next tick. The snapshot
