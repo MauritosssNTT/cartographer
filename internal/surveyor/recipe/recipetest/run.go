@@ -69,9 +69,9 @@ type listed struct {
 	o             outcome
 }
 
-// Run runs the scenario's steps against one recipe and judges each against its
-// expect. The environment variables the recipe maps are set to the scenario's
-// test values for the duration and restored after.
+// Run runs the scenario, then the automatic checks, against one recipe. The
+// environment variables the recipe maps are set to the scenario's test values
+// for the duration and restored after.
 func Run(ctx context.Context, in Input) []Result {
 	x := &run{in: in, replay: &starcore.Replay{}}
 	env := map[string]string{}
@@ -86,6 +86,7 @@ func Run(ctx context.Context, in Input) []Result {
 	}
 	defer x.setEnv(env)()
 	x.steps(ctx)
+	x.automatic(ctx)
 	return x.out
 }
 

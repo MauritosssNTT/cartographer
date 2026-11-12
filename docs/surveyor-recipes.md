@@ -185,8 +185,8 @@ lines of protocol v2 and reads with the parser exec recipes use, so the caps, th
 `check_failed` or `fetch_failed` with the mapped variables redacted; a verb it does not register answers like exit 64.
 
 A plugin's recipes are tested offline, before any Surveyor runs them, with `cartographer plugin test <dir>`: each recipe
-runs against a scenario of `tests/<name>.yaml` (a Starlark recipe's `http.request` answered from recorded exchanges),
-through this same parser (`docs/plugins.md` §Testing a surveyor side).
+runs against a scenario of `tests/<name>.yaml` (a Starlark recipe's `http.request` answered from recorded exchanges) and
+against the conformance checks, through this same parser (`docs/plugins.md` §Testing a surveyor side).
 
 ## Failures
 

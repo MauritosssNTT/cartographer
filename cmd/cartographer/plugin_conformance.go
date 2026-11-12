@@ -19,9 +19,9 @@ import (
 const pluginTestEnvPrefix = "CARTOGRAPHER_PLUGIN_TEST_"
 
 // pluginTest runs the recipes of a plugin folder against their scenarios
-// (tests/<name>.yaml). It needs no server, token or model, and no network: an
-// http.request of a Starlark recipe is answered from the recordings. Exit 0 all
-// passed, 1 a step failed, 2 it could not run.
+// (tests/<name>.yaml) and the conformance checks. It needs no server, token or
+// model, and no network: an http.request of a Starlark recipe is answered from
+// the recordings. Exit 0 all passed, 1 a check failed, 2 it could not run.
 func pluginTest(args []string) int {
 	output, args, err := outputFlag(args)
 	var only string
