@@ -37,6 +37,17 @@ func TestScrubSourcesKeepsWellFormedAndDatesTheCheck(t *testing.T) {
 	}
 }
 
+// A recipe and a connector of the same name are two sources; only a repeat
+// among recipes, or among connectors, is dropped.
+func TestScrubSourcesKeepsARecipeAndAConnectorOfTheSameName(t *testing.T) {
+	recipeSrc := Source{Name: "acme/wiki", Origin: OriginPlugin, Plugin: "acme", Digest: testDigest, Kind: KindExec, Shape: "feed", Check: SourceCheck{Outcome: CheckNever}}
+	conn := Source{Name: "acme/wiki", Origin: OriginPlugin, Plugin: "acme", Digest: testDigest, Kind: KindMCP, Check: SourceCheck{Outcome: CheckUnsupported}}
+	got := ScrubSources([]Source{recipeSrc, conn, recipeSrc, conn}, time.Now())
+	if len(got) != 2 || got[0].Kind != KindExec || got[1].Kind != KindMCP {
+		t.Fatalf("kept %+v, want the recipe and the connector once each", got)
+	}
+}
+
 func TestScrubSourcesDropsMalformedElements(t *testing.T) {
 	ok := Source{Name: "wiki-lister", Origin: OriginOperator, Kind: KindExec, Check: SourceCheck{Outcome: CheckNever}}
 	with := func(f func(s *Source)) Source { s := ok; f(&s); return s }

@@ -71,6 +71,34 @@ func TestSourcesReportGolden(t *testing.T) {
 	}
 }
 
+// A recipe and a connector of one name (a plugin's recipes/wiki and
+// connectors/wiki.yaml) are both reported, the recipe first, in the same order
+// whatever order the config lists them in, and the server keeps both.
+func TestSourcesKeepsARecipeAndAConnectorOfTheSameName(t *testing.T) {
+	c := &Config{
+		Checks:      NewCheckLog(),
+		ExecRecipes: []recipe.ExecConfig{{Name: "acme/wiki"}},
+		Connectors:  []connector.Config{{Name: "acme/wiki", Transport: connector.TransportHTTP, URL: "https://example.com/mcp"}},
+		PluginPins:  map[string]PluginPin{"acme": {Digest: sourcesDigest, Enabled: true}},
+	}
+	now := time.Now()
+	for i := 0; i < 20; i++ { // the sort is stable, not luck
+		got := c.Sources(now)
+		var wiki []string
+		for _, s := range got {
+			if s.Name == "acme/wiki" {
+				wiki = append(wiki, s.Kind)
+			}
+		}
+		if len(wiki) != 2 || wiki[0] != surveyorconfig.KindExec || wiki[1] != surveyorconfig.KindMCP {
+			t.Fatalf("acme/wiki kinds = %v, want [exec mcp]", wiki)
+		}
+		if kept := surveyorconfig.ScrubSources(got, now); len(kept) != len(got) {
+			t.Fatalf("the server keeps %d of %d", len(kept), len(got))
+		}
+	}
+}
+
 func TestSourcesNeverCheckedAndNilLog(t *testing.T) {
 	c := sourcesConfig()
 	c.Checks = nil // a Config built without a log reports never
