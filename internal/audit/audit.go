@@ -172,6 +172,12 @@ type State struct {
 // boundary immediately before the segment's first record, so a later-deleted
 // segment's place in the hash chain remains provable from the checkpoint
 // alone (first_hash/last_hash/count), even once its raw entries are gone.
+//
+// Start and End are the earliest and the latest entry timestamp of the
+// segment, not those of its first and last entry: the clock can step back
+// between two appends, and the hash chain, not the timestamps, orders the
+// entries. They are informational (retention goes by file mtime); the
+// verifier only requires Start <= End.
 type Checkpoint struct {
 	Name            string    `json:"name"`
 	Start           time.Time `json:"start"`
@@ -665,8 +671,19 @@ func (l *Log) rotateLocked() error {
 	name := fmt.Sprintf("%s.%06d.jsonl", time.Now().UTC().Format("20060102T150405.000000000Z"), nextSeq)
 	segmentPath := filepath.Join(dir, name)
 
+	// Timestamps are wall clock, so a step back (NTP, a resumed VM) can leave
+	// them out of order inside one segment: take the range, not first/last, or
+	// the writer produces a checkpoint its own verifier refuses (#1878).
+	start, end := entries[0].Timestamp.UTC(), entries[0].Timestamp.UTC()
+	for _, e := range entries[1:] {
+		if ts := e.Timestamp.UTC(); ts.Before(start) {
+			start = ts
+		} else if ts.After(end) {
+			end = ts
+		}
+	}
 	cp := Checkpoint{
-		Name: name, Start: entries[0].Timestamp.UTC(), End: entries[len(entries)-1].Timestamp.UTC(),
+		Name: name, Start: start, End: end,
 		Count: len(entries), PrevHash: entries[0].PrevHash, FirstHash: entries[0].Hash,
 		LastHash: entries[len(entries)-1].Hash, SigningRequired: l.kp != nil,
 	}
