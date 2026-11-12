@@ -66,7 +66,15 @@ echo "$*" >> "$FAKE_STATE.make"
 if [ -e HOSTDOWN1 ] && [ ! -e "$FAKE_STATE.hostdown" ]; then
   touch "$FAKE_STATE.hostdown"; echo "client_loop: send disconnect: Broken pipe"; exit 255
 fi
-case "$*" in test-rerun*) [ -e CONFIRMED ] && exit 2; exit 0 ;; esac
+# FAKE_PROBE255: the second targeted run (the first is the signoff's retry, the next the
+# bisection's first probe) loses the connection, as a probe of a bisection can.
+case "$*" in test-rerun*)
+  if [ -n "${FAKE_PROBE255:-}" ]; then
+    n=$(cat "$FAKE_STATE.rr" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_STATE.rr"
+    [ "$n" = 1 ] && { echo "client_loop: send disconnect: Broken pipe"; exit 255; }
+  fi
+  [ -e CONFIRMED ] && exit 2; exit 0 ;; esac
+case "$*" in web-perf*) [ -e WEBPERF ] && exit 2; exit 0 ;; esac
 [ -e BAD ] && exit 2
 # Another PR merges while the first gate runs (FAKE_MOVE_MAIN): main moves under the train.
 if [ -n "${FAKE_MOVE_MAIN:-}" ] && [ ! -e "$FAKE_STATE.moved" ]; then
@@ -76,6 +84,8 @@ if [ -n "${FAKE_MOVE_MAIN:-}" ] && [ ! -e "$FAKE_STATE.moved" ]; then
 fi
 if [ -e CONFIRMED ] || { [ -e FLAKYGO ] && [ ! -e "$FAKE_STATE.flakedgo" ]; }; then
   touch "$FAKE_STATE.flakedgo"
+  # A test that prints the signoff's line for a lost host, at the start of a line (SPOOF).
+  [ -e SPOOF ] && echo "signoff: the build host failed (exit 255) before the gate finished: nothing pushed, nothing posted"
   printf -- '--- FAIL: TestNamed (0.01s)\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\nmake: *** [Makefile:23: test] Error 1\n'
   exit 2
 fi
@@ -618,6 +628,72 @@ func TestLanderStopsWhenTheBuildHostStaysDown(t *testing.T) {
 	}
 	if strings.Contains(e.log(), "issue create") {
 		t.Errorf("no issue for a lost host:\n%s", e.log())
+	}
+}
+
+// The log of a gate holds the change's own test output: a test that prints the signoff's line for
+// a lost host does not turn a red gate into infrastructure. The signal is the signoff's exit code
+// (69), so this gate is red, confirmed on the targeted retry, and the change is rejected after one
+// gate, instead of the lander gating the same tree again until it gives up and the queue wedges.
+func TestLanderReadsARedGateAsRedWhateverALogLineSays(t *testing.T) {
+	e := newLandEnv(t)
+	e.queue("c", "fix(kb): c\n", "2026-01-01T10:00:00Z", map[string]string{"CONFIRMED": "x\n", "SPOOF": "x\n"})
+	out, ok := e.land()
+	if !ok {
+		t.Fatalf("land failed\n%s", out)
+	}
+	if e.refs("failed/") != "c" {
+		t.Fatalf("c must be rejected: failed=%q\n%s", e.refs("failed/"), out)
+	}
+	if runs := strings.Count(e.makeLog(), "-k gate"); runs != 1 {
+		t.Errorf("a red gate is not gated again as a lost host: %d gates\n%s", runs, e.makeLog())
+	}
+	if strings.Contains(out, "gating") && strings.Contains(out, "again") || strings.Contains(out, "infrastructure, not a test") {
+		t.Errorf("the printed line must not read as infrastructure\n%s", out)
+	}
+}
+
+// A probe of the bisection that loses the build host (ssh exit 255) is no verdict: it must not
+// move the bisection's bound and reject a change no test condemned. The lander falls back to
+// full gates, which find the real culprit (b), and a, before it, lands.
+func TestLanderABisectionProbeThatLosesTheHostRejectsNoInnocentChange(t *testing.T) {
+	e := newLandEnv(t)
+	e.queue("a", "fix(kb): a\n", "2026-01-01T10:00:00Z", map[string]string{"a2.txt": "a\n"})
+	e.queue("b", "fix(kb): b\n", "2026-01-01T11:00:00Z", map[string]string{"CONFIRMED": "x\n"})
+	e.queue("c", "fix(kb): c\n", "2026-01-01T12:00:00Z", map[string]string{"c.txt": "c\n"})
+	out, ok := e.land("FAKE_PROBE255=1")
+	if !ok {
+		t.Fatalf("land failed\n%s", out)
+	}
+	if e.refs("failed/") != "b" {
+		t.Fatalf("only b is rejected: failed=%q\n%s", e.refs("failed/"), out)
+	}
+	if got := strings.Join(e.mainSubjects(), " | "); got != "fix(kb): a | fix(kb): c" {
+		t.Fatalf("main holds %q, want a, then c\n%s", got, out)
+	}
+	if !strings.Contains(out, "the probe's machine is unavailable: bisecting with full gates") {
+		t.Errorf("a failed probe falls back to full gates\n%s", out)
+	}
+}
+
+// A failing deferred web-perf is a red gate, like any other make failure: the lander re-runs the
+// gate once and, red twice, rejects the change, instead of stopping on "not a test".
+func TestLanderReadsAFailingWebPerfAsRed(t *testing.T) {
+	e := newLandEnv(t)
+	e.write(filepath.Join(e.bin, "fakewin"), "#!/bin/sh\nexit 0\n")
+	e.queue("w", "fix(kb): w\n", "2026-01-01T10:00:00Z", map[string]string{"web/src/a.ts": "x\n", "WEBPERF": "x\n"})
+	out, ok := e.land("SIGNOFF_WINDOWS=" + filepath.Join(e.bin, "fakewin"))
+	if !ok {
+		t.Fatalf("land failed\n%s", out)
+	}
+	if e.refs("failed/") != "w" {
+		t.Fatalf("w must be rejected: failed=%q\n%s", e.refs("failed/"), out)
+	}
+	if strings.Contains(out, "not a test") {
+		t.Errorf("a failing web-perf is a test failure\n%s", out)
+	}
+	if !strings.Contains(out, "make web-perf failed (exit 2): nothing pushed, nothing posted") {
+		t.Errorf("the signoff names the exit\n%s", out)
 	}
 }
 

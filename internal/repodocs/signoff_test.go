@@ -1,10 +1,13 @@
 package repodocs
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -142,11 +145,30 @@ func (e *signoffEnv) branch(dir, name, file string) {
 // signoff runs make signoff's script in dir with extra environment.
 func (e *signoffEnv) signoff(dir string, extra ...string) (string, bool) {
 	e.t.Helper()
-	cmd := exec.Command("bash", filepath.Join(dir, "scripts", "signoff.sh"))
+	out, rc := e.signoffArgs(dir, nil, extra...)
+	return out, rc == 0
+}
+
+// signoffArgs runs signoff.sh with args and returns its output and exit code.
+func (e *signoffEnv) signoffArgs(dir string, args []string, extra ...string) (string, int) {
+	e.t.Helper()
+	cmd := exec.Command("bash", append([]string{filepath.Join(dir, "scripts", "signoff.sh")}, args...)...)
 	cmd.Dir, cmd.Env = dir, append(append([]string{}, e.env...), extra...)
 	out, err := cmd.CombinedOutput()
-	return string(out), err == nil
+	var ee *exec.ExitError
+	switch {
+	case err == nil:
+		return string(out), 0
+	case errors.As(err, &ee):
+		return string(out), ee.ExitCode()
+	}
+	e.t.Fatalf("signoff.sh: %v", err)
+	return "", -1
 }
+
+// hostExit is the signoff's exit for a wrapper that failed in the middle of the gate: the
+// signal scripts/land.sh reads (never a line of the log, which holds the change's own output).
+const hostExit = 69
 
 func (e *signoffEnv) log(path string) string {
 	b, _ := os.ReadFile(path)
@@ -601,10 +623,10 @@ func TestSignoffNamesAWrapperFailureAsTheBuildHost(t *testing.T) {
 		t.Run("exit "+rc, func(t *testing.T) {
 			e := newSignoffEnv(t)
 			e.branch(e.work, "feat/x", "x.txt")
-			out, ok := e.signoff(e.work, "FAKE_MAKE_RC="+rc,
+			out, code := e.signoffArgs(e.work, nil, "FAKE_MAKE_RC="+rc,
 				"FAKE_MAKE_OUT=--- FAIL: TestA (0.01s)\\nFAIL\\tgithub.com/x/p/a\\t0.2s\\n")
-			if ok {
-				t.Fatalf("a wrapper failure must fail the signoff\n%s", out)
+			if code != hostExit {
+				t.Fatalf("a wrapper failure exits %d, got %d\n%s", hostExit, code, out)
 			}
 			if want := "signoff: the build host failed (exit " + rc + ") " + hostLine; !strings.Contains(out, want) {
 				t.Errorf("the output lacks %q\n%s", want, out)
@@ -626,9 +648,9 @@ func TestSignoffARetryThatLosesTheHostIsNotConfirmed(t *testing.T) {
 	red := "--- FAIL: TestA (0.01s)\\nFAIL\\tgithub.com/x/p/internal/kb\\t0.2s\\nmake: *** [Makefile:23: test] Error 1\\n"
 	e := newSignoffEnv(t)
 	e.branch(e.work, "feat/x", "x.txt")
-	out, ok := e.signoff(e.work, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT="+red, "FAKE_RERUN_RC=255")
-	if ok {
-		t.Fatalf("a retry that cannot finish must fail the signoff\n%s", out)
+	out, code := e.signoffArgs(e.work, nil, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT="+red, "FAKE_RERUN_RC=255")
+	if code != hostExit {
+		t.Fatalf("a retry that cannot finish exits %d, got %d\n%s", hostExit, code, out)
 	}
 	if want := "signoff: the build host failed (exit 255) " + hostLine; !strings.Contains(out, want) {
 		t.Errorf("the output lacks %q\n%s", want, out)
@@ -653,9 +675,9 @@ func TestSignoffNamesAWindowsWrapperFailureAsTheWindowsMachine(t *testing.T) {
 	}
 	t.Run("the leg", func(t *testing.T) {
 		e, win := setup(t)
-		out, ok := e.signoff(e.work, win, "FAKE_WIN_RC=255")
-		if ok {
-			t.Fatalf("a wrapper failure must fail the signoff\n%s", out)
+		out, code := e.signoffArgs(e.work, nil, win, "FAKE_WIN_RC=255")
+		if code != hostExit {
+			t.Fatalf("a wrapper failure exits %d, got %d\n%s", hostExit, code, out)
 		}
 		if want := "signoff: the Windows machine failed (exit 255) " + hostLine; !strings.Contains(out, want) {
 			t.Errorf("the output lacks %q\n%s", want, out)
@@ -670,9 +692,9 @@ func TestSignoffNamesAWindowsWrapperFailureAsTheWindowsMachine(t *testing.T) {
 	t.Run("the retry", func(t *testing.T) {
 		e, win := setup(t)
 		red := "--- FAIL: TestW (1.0s)\\r\\nFAIL\\tgithub.com/x/p/internal/a\\t2.0s\\r\\n"
-		out, ok := e.signoff(e.work, win, "FAKE_WIN_RC=1", "FAKE_WIN_OUT="+red, "FAKE_WIN_RERUN_RC=255")
-		if ok {
-			t.Fatalf("a retry that cannot finish must fail the signoff\n%s", out)
+		out, code := e.signoffArgs(e.work, nil, win, "FAKE_WIN_RC=1", "FAKE_WIN_OUT="+red, "FAKE_WIN_RERUN_RC=255")
+		if code != hostExit {
+			t.Fatalf("a retry that cannot finish exits %d, got %d\n%s", hostExit, code, out)
 		}
 		if want := "signoff: the Windows machine failed (exit 255) " + hostLine; !strings.Contains(out, want) {
 			t.Errorf("the output lacks %q\n%s", want, out)
@@ -683,25 +705,124 @@ func TestSignoffNamesAWindowsWrapperFailureAsTheWindowsMachine(t *testing.T) {
 	})
 }
 
-// The deferred web budget test runs through the wrapper too: its make failure (2) stays the red
-// line, its 255 is the build host.
+// The deferred web budget test runs through the wrapper too: its make failure (2) is a red gate,
+// on the line scripts/land.sh reads as red (`failed (exit N): nothing pushed`, with the exit: a
+// line without it made the lander stop on "not a test"), its 255 is the build host.
 func TestSignoffNamesAWrapperFailureOfTheDeferredWebPerf(t *testing.T) {
-	for rc, want := range map[string]string{
-		"2":   "make web-perf failed: nothing pushed, nothing posted",
-		"255": "signoff: the build host failed (exit 255) " + hostLine,
+	for rc, want := range map[string]struct {
+		line string
+		code int
+	}{
+		"2":   {"make web-perf failed (exit 2): nothing pushed, nothing posted", 1},
+		"255": {"signoff: the build host failed (exit 255) " + hostLine, hostExit},
 	} {
 		t.Run("exit "+rc, func(t *testing.T) {
 			e := newSignoffEnv(t)
 			e.goModule()
 			e.branch(e.work, "feat/x", "web/src/a.ts")
 			win := "SIGNOFF_WINDOWS=" + filepath.Join(filepath.Dir(e.winLog), "bin", "fakewin")
-			out, ok := e.signoff(e.work, win, "FAKE_WEBPERF_RC="+rc)
-			if ok || !strings.Contains(out, want) {
-				t.Fatalf("want a failure with %q: ok=%v\n%s", want, ok, out)
+			out, code := e.signoffArgs(e.work, nil, win, "FAKE_WEBPERF_RC="+rc)
+			if code != want.code || !strings.Contains(out, want.line) {
+				t.Fatalf("want exit %d and %q: got exit %d\n%s", want.code, want.line, code, out)
+			}
+			if code == 1 && !landRedLine.MatchString(out) {
+				t.Errorf("scripts/land.sh gate_once would not read the output as red\n%s", out)
 			}
 			if e.remoteTip("origin", "feat/x") != "" || len(e.posts()) != 0 {
 				t.Errorf("nothing may be pushed or posted\n%s", out)
 			}
 		})
 	}
+}
+
+// landRedLine is the red signoff line scripts/land.sh gate_once() greps for.
+var landRedLine = regexp.MustCompile(`failed \(exit [0-9]+\): nothing pushed, nothing posted`)
+
+// A red gate exits 1, the code the lander reads as red (and its line the red line), also when a
+// test printed the line of a lost host: only the exit code tells the two apart.
+func TestSignoffARedGateExits1EvenWithAHostLineInItsLog(t *testing.T) {
+	e := newSignoffEnv(t)
+	e.branch(e.work, "feat/x", "x.txt")
+	spoof := "signoff: the build host failed (exit 255) " + hostLine
+	out, code := e.signoffArgs(e.work, nil, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT="+spoof+"\\n--- FAIL: TestA (0.01s)\\nFAIL\\tgithub.com/x/p/a\\t0.2s\\n", "FAKE_RERUN_RC=2")
+	if code != 1 || !landRedLine.MatchString(out) {
+		t.Fatalf("a red gate exits 1 on the red line, got exit %d\n%s", code, out)
+	}
+}
+
+// The first call over the wrapper, the platform probe, is where a dropped connection is likeliest
+// to show: it is the build host failing (exit 69, the lander gates again) for any exit but 126 and
+// 127 (the wrapper is missing or not executable: "check SIGNOFF_MAKE", exit 1); 75 stays the CI
+// fallback.
+func TestSignoffThePlatformProbeOfALostHostIsTheBuildHost(t *testing.T) {
+	for rc, want := range map[string]struct {
+		line string
+		code int
+	}{
+		"255": {"signoff: the build host failed (exit 255) " + hostLine, hostExit},
+		"1":   {"signoff: the build host failed (exit 1) " + hostLine, hostExit},
+		"126": {"the platform probe failed (exit 126): check SIGNOFF_MAKE", 1},
+		"127": {"the platform probe failed (exit 127): check SIGNOFF_MAKE", 1},
+	} {
+		t.Run("exit "+rc, func(t *testing.T) {
+			e := newSignoffEnv(t)
+			e.branch(e.work, "feat/x", "x.txt")
+			bin := filepath.Join(filepath.Dir(e.makeLog), "bin")
+			e.write(filepath.Join(bin, "probemake"), "#!/bin/sh\ncase \"$*\" in *signoff-platform*) exit "+rc+" ;; esac\nexit 0\n", 0o755)
+			out, code := e.signoffArgs(e.work, nil, "SIGNOFF_MAKE="+filepath.Join(bin, "probemake"))
+			if code != want.code || !strings.Contains(out, want.line) {
+				t.Fatalf("want exit %d and %q: got exit %d\n%s", want.code, want.line, code, out)
+			}
+			if e.remoteTip("origin", "feat/x") != "" || len(e.posts()) != 0 {
+				t.Errorf("nothing may be pushed or posted\n%s", out)
+			}
+		})
+	}
+}
+
+// signoff.sh --probe is the lander's bisection step: 0 green, the platform's own failure code
+// (make's 2, `go test`'s 1 on windows) red, 75 the machine is unavailable; any other exit is the
+// wrapper's (ssh's 255, a signal, a missing command) and is reported as 75, so the lander bisects
+// with full gates instead of reading it as red and rejecting a change no test condemned.
+func TestSignoffProbeMapsAWrapperFailureTo75(t *testing.T) {
+	cases := []struct {
+		plat, rc string
+		want     int
+	}{
+		{"linux", "0", 0}, {"linux", "2", 2}, {"linux", "75", 75},
+		{"linux", "255", 75}, {"linux", "137", 75}, {"linux", "127", 75}, {"linux", "1", 75},
+		{"windows", "0", 0}, {"windows", "1", 1}, {"windows", "75", 75},
+		{"windows", "255", 75}, {"windows", "2", 75}, {"windows", "127", 75},
+	}
+	for _, c := range cases {
+		t.Run(c.plat+" exit "+c.rc, func(t *testing.T) {
+			e := newSignoffEnv(t)
+			win := "SIGNOFF_WINDOWS=" + filepath.Join(filepath.Dir(e.winLog), "bin", "fakewin")
+			out, code := e.signoffArgs(e.work, []string{"--probe", c.plat, "github.com/x/p/a", "-"},
+				win, "FAKE_RERUN_RC="+c.rc, "FAKE_WIN_RERUN_RC="+c.rc)
+			if code != c.want {
+				t.Fatalf("--probe %s with a wrapper exit %d: want %d, got %d\n%s", c.plat, mustAtoi(t, c.rc), c.want, code, out)
+			}
+			if len(e.posts()) != 0 || e.remoteTip("origin", "main") != "" {
+				t.Errorf("a probe pushes and posts nothing\n%s", out)
+			}
+		})
+	}
+	// The race run of the linux probe goes through the same rule.
+	t.Run("linux race packages", func(t *testing.T) {
+		e := newSignoffEnv(t)
+		_, code := e.signoffArgs(e.work, []string{"--probe", "linux", "-", "github.com/x/p/a"}, "FAKE_RERUN_RC=255")
+		if code != 75 {
+			t.Fatalf("want 75, got %d", code)
+		}
+	})
+}
+
+func mustAtoi(t *testing.T, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
 }

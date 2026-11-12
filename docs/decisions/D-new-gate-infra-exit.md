@@ -1,0 +1,23 @@
+---
+topic: project-governance
+---
+
+# D-new-gate-infra-exit — A gate that loses its build host exits 69 and is gated again, never retried as a flake
+
+**Decision.** `scripts/signoff.sh` ends with exit 69 (EX_UNAVAILABLE) when the `SIGNOFF_MAKE` or `SIGNOFF_WINDOWS` wrapper fails for a reason that is not the tests': any exit other than make's 2, the Windows shards' 1 and 75, in the targets, the platform probe, the targeted retry and the deferred `web-perf`. Only 126 and 127 on the platform probe (the wrapper is missing or not executable) stay a configuration error, exit 1. `scripts/land.sh` reads that exit code, not a line of the gate log: the same tree is gated again, with no flaky issue and no bisection, up to `LAND_INFRA_TRIES` gates in a row (3), `LAND_INFRA_WAIT` seconds apart (120). A host that stays down stops the lander with the queue untouched. `signoff.sh --probe` maps every exit that is neither 0, the platform's own failure (make's 2, the Windows retry's 1) nor 75 to 75, so a probe that lost its host sends the lander to full gates. A failing deferred `web-perf` ends with the red line `make web-perf failed (exit N): nothing pushed, nothing posted`.
+
+**Why.** D1755 listed "an exit that is the wrapper's, not make's" among the failures that get the lander's whole re-run. In practice (#1843, #1938) a dropped ssh or rsync (exit 255) printed the same `failed (exit 255): nothing pushed` line as a red gate. The lander re-ran, the re-run was green, and it filed a `flaky:` issue naming no test. Worse, a lost host during a bisection probe read as red and moved the bisection, so an innocent change could be rejected. A re-run is the wrong answer to a failure no test caused: it spends a gate, files a false issue and feeds the bisection a verdict nobody earned. The signal is an exit code because the gate log carries the change's own test output (D1755 already notes it): a test that prints the lost-host line at the start of a line would otherwise turn a real red into infrastructure, and the lander, gating a red tree again until the bound, would never bisect or reject it. The queue would wedge on that change. 69 is used because no make, go, ssh (255) or signal (128+n) exit is 69, and it differs from 75 on purpose: 75 is the wrapper telling the signoff "the machine is unavailable, run the gate in CI"; 69 is the signoff telling the lander "the machine broke in the middle, gate the same tree again".
+
+**Alternatives rejected.**
+- Keep the whole re-run (D1755): it files flaky issues for no test and cannot tell a lost host from a red tree on bisection.
+- Recognize the failure by rgate's or ssh's own text (`Timeout, server … not responding`, `client_loop`): it depends on the wrapper, and `SIGNOFF_MAKE` may be any command.
+- A line in the log, as the first version of this change did: it is spoofable by the change's tests, and the failure mode (a wedged queue) is worse than the one D1755 accepted (a test that lies about passing).
+- Retry the host failure inside the signoff: the signoff cannot tell how long the host stays down, and a bisection step or an interactive `make signoff` should report it, not hide it. The lander owns the bound.
+- Treat a probe's 255 as 75 only: a signal or a missing wrapper (137, 127) has the same effect, and the platform's own failure code is the only exit that is a verdict.
+
+**Consequences.**
+- Amends D1755: a wrapper failure is no longer a failure the lander re-runs as a flake. A retry that fails with an exit that is not the tests' own is not "confirmed on a targeted retry" either.
+- A wrapper that exits with something other than make's code (a remote shell that turns 2 into 1, say) is now reported as the build host, gated again three times and then stops the lander, instead of landing a flaky issue. `SIGNOFF_MAKE` must exit with make's code.
+- A wrapper that is broken from the start and exits 1 or 2 on `signoff-platform` costs three gates and two waits before the lander stops, instead of an immediate stop.
+- Known follow-up: the greps for `failed (exit N): nothing pushed, nothing posted`, `confirmed on a targeted retry:` and `of ci.yml run N is` still read the log. A test that prints one can make a signoff that failed for another reason read as red (a re-run, at worst a bisection of a train that failed anyway); none can make a red gate read as infrastructure. They carry the retry and bisection semantics (the `probe:` line is also an input), which an exit code cannot replace without redesigning them.
+- The exit 69 and the lander's constant `host_rc` are one contract: `internal/repodocs/signoff_test.go` and `land_test.go` pin both sides.

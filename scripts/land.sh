@@ -24,8 +24,9 @@
 # `signoff` status: one gate for the whole train). The signoff itself retries once the
 # Go tests a red run names (its step 4c): green, the train lands on that gate and a `bug`
 # issue names them; red, the failure is confirmed and bisection starts without a re-run.
-# A signoff that ends with `the build host failed (exit N) before the gate finished` (ssh or
-# rsync dropped, so no test failed: #1843) is not red: the same tree is gated again, no flaky
+# A signoff that exits 69 (ssh or rsync dropped, so no test failed: #1843; its line `the build
+# host failed (exit N) before the gate finished` is for people: the log holds the change's own
+# output, so the code decides) is not red: the same tree is gated again, no flaky
 # issue, up to LAND_INFRA_TRIES gates in a row; a host that stays down stops the lander with
 # the queue untouched. Any other red: one re-run of the same tree; green then means a flaky
 # test, so the train lands and a `bug` issue names the tests. Red twice: bisection over the
@@ -360,9 +361,12 @@ number_decisions() {
   done <<<"$touched" | head -n 1 || true) # grep finds nothing: pipefail would end the lander
 }
 
-# The signoff's line for a wrapper that failed (ssh or rsync dropped: exit 255, or any exit
+# The signoff's exit code for a wrapper that failed (ssh or rsync dropped: exit 255, or any exit
 # that is not make's 2, the Windows shards' 1 or 75): no test failed, so it is neither red nor
-# a flake (signoff.sh step 4d). The shape is shared with that script, tests pin both.
+# a flake (signoff.sh step 4d). EX_UNAVAILABLE, not 75 (EX_TEMPFAIL, the wrapper's "run the gate
+# in CI"). An out-of-band signal: the gate log holds the change's own test output, so a line in
+# it, which a test can print, must never decide that the gate was not red. Tests pin both scripts.
+host_rc=69
 infra_line='^signoff: the (build host|Windows machine) failed \(exit [0-9]+\) before the gate finished: nothing pushed, nothing posted$'
 gate_once() { # $1 = log file; signoff.sh on the train branch: exit 0 green, 1 red, 2 not a test, 3 the build host failed
   local rc
@@ -372,7 +376,10 @@ gate_once() { # $1 = log file; signoff.sh on the train branch: exit 0 green, 1 r
   rc=${PIPESTATUS[0]}
   set -e
   [ "$rc" = 0 ] && return 0
-  if grep -qE "$infra_line" "$1"; then return 3; fi
+  [ "$rc" != "$host_rc" ] || return 3
+  # Known follow-up: these greps read the log, so a test that prints such a line can make a
+  # signoff that failed for another reason read as red. That costs a re-run, and at worst a
+  # bisection of a train that failed anyway; it cannot make a red gate read as infrastructure.
   if grep -qE 'failed \(exit [0-9]+\): nothing pushed, nothing posted|of ci.yml run [0-9]+ is ' "$1"; then return 1; fi
   return 2
 }
@@ -387,7 +394,9 @@ gate() { # $1 = log file; exit 0 green, 1 red, 2 not a test (the caller dies)
   while :; do
     rc=0; gate_once "$1" || rc=$?
     [ "$rc" != 3 ] && return "$rc"
-    why=$(grep -E "$infra_line" "$1" | tail -n 1 | sed 's/^signoff: //; s/: nothing pushed, nothing posted$//')
+    # The words only (the exit code decided): the signoff prints its line last.
+    why=$(grep -E "$infra_line" "$1" | tail -n 1 | sed 's/^signoff: //; s/: nothing pushed, nothing posted$//' || true)
+    [ -n "$why" ] || why="the build host failed before the gate finished"
     [ "$n" -lt "$max" ] ||
       die "infrastructure, not a test: $why, in $n gates of $branch in a row (see $1): the queue is untouched"
     log "$why: gating $branch again ($n/$max done, in ${LAND_INFRA_WAIT:-120} s)"

@@ -26,6 +26,17 @@
 #                 the signoff ends with `the build host failed (exit N) before the gate
 #                 finished` and the lander gates the train again, no flake (step 4d). It
 #                 gets plain words: `-k` and the targets, `test-rerun RERUN_PKGS=<a,b>`.
+#                 The first call, `signoff-platform`, goes through the same rule: only
+#                 126 and 127 (the wrapper is missing or not executable) are a
+#                 configuration error, "check SIGNOFF_MAKE".
+#
+# Exits: 0 signed off; 1 refused or red (a `failed (exit N): nothing pushed` line);
+# 69 (EX_UNAVAILABLE) the wrapper failed in the middle of the gate, no test failed. The code
+# is the signal scripts/land.sh reads: the log carries the change's own test output, so a
+# line in it proves nothing. It is not 75 (EX_TEMPFAIL), which only SIGNOFF_MAKE and
+# SIGNOFF_WINDOWS use, to say "the machine is unavailable, run the gate in CI": here the
+# machine broke mid-gate, and the answer is to gate the same tree again. No make, go, ssh
+# (255) or signal (128+n) exit is 69, and every command of this script is checked or ends in die.
 #   SIGNOFF_WINDOWS a command that runs its arguments natively on Windows from the
 #                 same tree (empty: no Windows leg). It gets scripts/test-shard.sh, every
 #                 shard at once (SIGNOFF_WINDOWS_SHARDS, default 4), over the packages a
@@ -55,21 +66,26 @@ cd "$(git rev-parse --show-toplevel)"
 # none): the lander's bisection step (scripts/land.sh, D1878). It runs, on this
 # tree, only the command the targeted retry below ran when it confirmed a red run (its
 # `signoff: probe:` line): no refusal, no push, no status. Exit 0 green, 75 the machine is
-# unavailable, anything else red.
+# unavailable, the platform's own failure code red (make's 2 on linux, `go test`'s 1 on
+# windows): any other exit (ssh's 255, a signal, a missing wrapper) is the wrapper's, not the
+# tests', and is reported as 75 too: the lander then bisects with full gates, whose infra
+# handling is aware of a lost host, instead of rejecting a change no test condemned.
 if [ "${1:-}" = --probe ]; then
   plat=${2:?--probe <linux|windows> <packages> <race packages>} p0=${3:--} p1=${4:--}
   [ "$p0" != - ] || p0=
   [ "$p1" != - ] || p1=
   read -r -a mk <<<"${SIGNOFF_MAKE:-make}"
-  rc=0
+  rc=0 own=2
   # shellcheck disable=SC2086  # the package lists are word lists on purpose
   if [ "$plat" = windows ]; then
+    own=1
     read -r -a wmk <<<"${SIGNOFF_WINDOWS:?the probe of a Windows failure needs SIGNOFF_WINDOWS}"
     [ -z "$p0" ] || "${wmk[@]}" go test -count=1 -timeout 20m ${p0//,/ } || rc=$?
   else
     [ -z "$p0" ] || "${mk[@]}" test-rerun RERUN_PKGS="$p0" || rc=$?
     [ "$rc" != 0 ] || [ -z "$p1" ] || "${mk[@]}" test-rerun RERUN_PKGS="$p1" RERUN_RACE=1 || rc=$?
   fi
+  case "$rc" in 0 | 75 | "$own") ;; *) echo "signoff: the probe's machine failed (exit $rc): not a verdict" >&2; rc=75 ;; esac
   exit "$rc"
 fi
 
@@ -163,11 +179,13 @@ hosted() {
 # 4d. A wrapper failure (#1843). Make fails with exit 2, the Windows shards
 # with exit 1, an unavailable machine says 75: any other exit is the wrapper's (ssh and rsync
 # exit 255 when the connection drops), the log may stop before the targets did and no test
-# failed. The line has a shape of its own, which scripts/land.sh gate() matches: it gates the
-# train again, bounded, and files no flaky issue. A wrapper that dies like this is not red.
+# failed. The exit code, 69 (see Exits above), is what scripts/land.sh gate_once() reads, never a
+# line of the log, which holds the change's own output: it gates the train again, bounded, and
+# files no flaky issue. A wrapper that dies like this is not red. The line is for people.
 hostrc=
 host_die() { # $1 = what failed, $2 = its exit code
-  die "$1 failed (exit $2) before the gate finished: nothing pushed, nothing posted"
+  echo "signoff: $1 failed (exit $2) before the gate finished: nothing pushed, nothing posted" >&2
+  exit 69
 }
 
 # 4c. The targeted retry (D1755). When every failure of a red log is a
@@ -220,7 +238,13 @@ read -r -a mk <<<"${SIGNOFF_MAKE:-make}"
 prc=0
 probe=$("${mk[@]}" -s --no-print-directory signoff-platform) || prc=$?
 [ "$prc" != 75 ] || hosted
-[ "$prc" = 0 ] || die "the platform probe failed: check SIGNOFF_MAKE"
+# 126/127: the wrapper is not executable or not found, a configuration error. Any other exit
+# is the host failing at its first call (an ssh drop is the likeliest moment): gated again.
+case "$prc" in
+  0) ;;
+  126 | 127) die "the platform probe failed (exit $prc): check SIGNOFF_MAKE" ;;
+  *) host_die "the build host" "$prc" ;;
+esac
 platform=$(printf '%s\n' "$probe" | awk 'NF { l = $0 } END { print l }')
 [ -n "$platform" ] || die "the platform probe printed nothing"
 echo "signoff: running make $targets on $platform" >&2
@@ -281,7 +305,7 @@ if [ -n "$defer" ]; then
   wprc=0; "${mk[@]}" web-perf NPM_CI= || wprc=$?
   case "$wprc" in
     0) ;;
-    2|75) die "make web-perf failed: nothing pushed, nothing posted" ;;
+    2|75) die "make web-perf failed (exit $wprc): nothing pushed, nothing posted" ;;
     *) host_die "the build host" "$wprc" ;;
   esac
 fi

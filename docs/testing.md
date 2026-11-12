@@ -1058,10 +1058,15 @@ test-rerun`, the race ones as `race` does, or `go test -count=1` through `SIGNOF
 Windows leg). Only make's own failure (exit 2) is retried: another exit is the wrapper's (ssh and rsync
 exit 255 when the connection drops), and so is a retry that ends with an exit that is not the
 tests' own (make's 2, the Windows retry's 1). On the Windows leg the shards' exit 1 is the tests',
-75 an unavailable machine and any other exit the wrapper's. A wrapper failure is not a red gate:
-the signoff ends with `signoff: the build host failed (exit N) before the gate finished: nothing
-pushed, nothing posted` (`the Windows machine` for that leg), a line of its own that the lander
-reads, and a retry that lost its host never prints `confirmed on a targeted retry`. The
+75 an unavailable machine and any other exit the wrapper's; the same holds for the platform probe
+(the first call, where only 126 and 127, a missing or non-executable wrapper, stay `check
+SIGNOFF_MAKE`) and for the deferred `web-perf`, whose make failure is a red gate on the line
+`make web-perf failed (exit N)`. A wrapper failure is not a red gate: the signoff prints `signoff:
+the build host failed (exit N) before the gate finished: nothing pushed, nothing posted` (`the
+Windows machine` for that leg) and exits 69 (EX_UNAVAILABLE), the code the lander reads (the log
+holds the change's own test output, so a line in it proves nothing; 75 stays the wrapper's "machine
+unavailable, run the gate in CI"). A retry that lost its host never prints `confirmed on a targeted
+retry`. The
 log holds the tests' output too, so the script reads only lines in `go test`'s exact shape, and
 a line that looks like one but is not gets no retry. Green, the tests are flaky:
 the signoff goes on, names them on a `signoff: flaky:` line and in the status (`<n> flaky
@@ -1079,10 +1084,11 @@ prefix is red. When the signoff confirmed the failure on named Go tests, its `si
 line names their packages and platform, and each bisection step runs only those
 (`scripts/signoff.sh --probe`, a minute or two instead of a full signoff, D1878);
 the prefix before the rejected change then gets one full signoff before it lands (red: the
-train is composed again), and a probe whose machine is unavailable falls back to full gates. A gate that fails for a reason that is not a test (the signoff stops before
-the targets) stops the lander and leaves the queue untouched. A gate that ends with `the build host
-failed (exit N) before the gate finished` (the connection to the build host or the Windows machine
-dropped, no test failed) is neither red nor flaky: the lander gates the same tree again, without a
+train is composed again), and a probe whose machine is unavailable, or whose wrapper failed with an exit that is not the platform's
+own (make's 2, the Windows retry's 1: ssh's 255, a signal), reports 75 and falls back to full gates. A gate that fails for a reason that is not a test (the signoff stops before
+the targets) stops the lander and leaves the queue untouched. A gate whose signoff exits 69 (`the build host
+failed (exit N) before the gate finished`: the connection to the build host or the Windows machine
+dropped, no test failed) is neither red nor flaky (D-new-gate-infra-exit): the lander gates the same tree again, without a
 re-run's flaky issue and without bisection, up to `LAND_INFRA_TRIES` gates in a row (3, `LAND_INFRA_WAIT`
 seconds apart, 120), then stops with the queue untouched, naming the failure; the log of each failed
 attempt is kept as `gate-<id>.log.host<n>`. Once the train PR merged, a
