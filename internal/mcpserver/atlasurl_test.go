@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/BeppeTemp/cartographer/internal/webui"
 )
 
 // routedAtlasHandler is newRoutedTestHandler with the Atlas surface set as
@@ -26,8 +24,21 @@ func routedAtlasHandler(t *testing.T, web bool, addr string, names ...string) ht
 	if web {
 		multi.EnableWeb(http.NotFoundHandler())
 	}
-	multi.SetAtlasURL(webui.LoopbackURL(addr))
-	return routedTokenStore(names...).Middleware(multi.Handler())
+	multi.SetAtlasAddr(addr)
+	return fromPeer(routedTokenStore(names...).Middleware(multi.Handler()), "127.0.0.1:50000")
+}
+
+// fromPeer sets the TCP peer of every request (httptest's default is a
+// documentation address, which is not local) and, in pairs, headers a proxy
+// would add.
+func fromPeer(h http.Handler, remoteAddr string, headers ...string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.RemoteAddr = remoteAddr
+		for i := 0; i+1 < len(headers); i += 2 {
+			r.Header.Set(headers[i], headers[i+1])
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 // #1945: kb_status names the Atlas deep link of the KB it reports on, only
@@ -78,6 +89,52 @@ func TestKBStatus_UIURLOnlyForALoopbackBind(t *testing.T) {
 		}
 		if obj["ui_url"] != c.want {
 			t.Errorf("bind %s: ui_url = %v, want %s", c.addr, obj["ui_url"], c.want)
+		}
+	}
+}
+
+// ui_url is for a caller on the server's own machine: a remote peer, and a
+// local proxy relaying a remote one, learn neither the port nor a link they
+// cannot open. The same server answers all of them.
+func TestKBStatus_UIURLOnlyForALocalCaller(t *testing.T) {
+	t.Parallel()
+	multi := NewMultiKBServer("test")
+	k := setupNamedTestKB(t, "kb-a")
+	multi.MountKB("kb-a", func(s *Server) { RegisterKBTools(s, k, Deps{}) })
+	if err := multi.EnableRoutedMount("test", nil); err != nil {
+		t.Fatalf("EnableRoutedMount: %v", err)
+	}
+	multi.EnableWeb(http.NotFoundHandler())
+	multi.SetAtlasAddr("0.0.0.0:39273")
+	base := routedTokenStore("kb-a").Middleware(multi.Handler())
+	want := "http://127.0.0.1:39273/ui/?kb=kb-a"
+	cases := []struct {
+		name    string
+		peer    string
+		headers []string
+		present bool
+	}{
+		{"loopback v4", "127.0.0.1:50000", nil, true},
+		{"loopback v6", "[::1]:50000", nil, true},
+		{"remote", "192.0.2.7:50000", nil, false},
+		{"remote v6", "[2001:db8::7]:50000", nil, false},
+		{"no peer address", "", nil, false},
+		{"loopback proxy, X-Forwarded-For", "127.0.0.1:50000", []string{"X-Forwarded-For", "198.51.100.9"}, false},
+		{"loopback proxy, Forwarded", "127.0.0.1:50000", []string{"Forwarded", "for=198.51.100.9"}, false},
+		{"loopback proxy, X-Forwarded-Host", "127.0.0.1:50000", []string{"X-Forwarded-Host", "example.com"}, false},
+		{"loopback proxy, X-Real-IP", "127.0.0.1:50000", []string{"X-Real-IP", "198.51.100.9"}, false},
+	}
+	for _, c := range cases {
+		obj, _ := routedKBStatusConnection(t, fromPeer(base, c.peer, c.headers...), RoutedMountPath, "kb-a")
+		if !c.present {
+			raw, _ := json.Marshal(obj)
+			if _, ok := obj["ui_url"]; ok || strings.Contains(string(raw), "39273") {
+				t.Errorf("%s: the answer carries ui_url or the port: %v", c.name, obj["ui_url"])
+			}
+			continue
+		}
+		if obj["ui_url"] != want {
+			t.Errorf("%s: ui_url = %v, want %s", c.name, obj["ui_url"], want)
 		}
 	}
 }

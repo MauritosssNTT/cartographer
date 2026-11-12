@@ -359,11 +359,16 @@ func (m *MultiKBServer) EnableWeb(static http.Handler) {
 	m.web = &webMount{Static: static}
 }
 
-// SetAtlasURL records the browser address of the Atlas (webui.LoopbackURL of
-// the listen address, "" for a specific non-loopback bind), which kb_status
-// reports as ui_url (#1945). Call it before serving; it is reported only while
-// the bundle is mounted.
-func (m *MultiKBServer) SetAtlasURL(u string) { m.atlasURL = u }
+// SetAtlasAddr gives the listen address kb_status derives ui_url from (#1945).
+// It keeps the address only if webui.LoopbackURL accepts it (a loopback or
+// wildcard bind) and reports whether it did: serve cannot hand over a URL of
+// its own choosing, so the bind rule lives in one place. Call it before
+// serving; ui_url is reported only while the bundle is mounted, and only to a
+// local caller (atlasKBURL).
+func (m *MultiKBServer) SetAtlasAddr(addr string) bool {
+	m.atlasURL = webui.LoopbackURL(addr)
+	return m.atlasURL != ""
+}
 
 // servedAtlasURL is the Atlas address, "" unless EnableWeb mounted a bundle.
 func (m *MultiKBServer) servedAtlasURL() string {
@@ -514,6 +519,7 @@ func resourceBaseURL(r *http.Request) string {
 // preferring one over the other.
 func (m *MultiKBServer) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r = withLocalCaller(r)
 		switch {
 		case r.URL.Path == "/health":
 			// Liveness: always 200 with status "ok", even when not ready.

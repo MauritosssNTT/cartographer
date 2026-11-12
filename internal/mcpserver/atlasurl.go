@@ -1,13 +1,22 @@
 package mcpserver
 
-import "github.com/BeppeTemp/cartographer/internal/webui"
+import (
+	"context"
+	"net"
+	"net/http"
+	"strings"
+
+	"github.com/BeppeTemp/cartographer/internal/client"
+	"github.com/BeppeTemp/cartographer/internal/webui"
+)
 
 // atlasKBURL is kb_status's ui_url (#1945): the Atlas deep link to this
 // server's KB, "" when the server that mounted it serves no Atlas (stdio,
-// web.enabled off, no bundle). The caller of kb_status can read the KB it
-// names, so the link reveals nothing it cannot see.
-func (s *Server) atlasKBURL() string {
-	if s == nil || s.atlasURL == nil {
+// web.enabled off, no bundle, a bind to a specific address) or when the caller
+// is not on the server's own machine. A remote caller learns neither the port
+// nor that the host is loopback-bound, and 127.0.0.1 is no link to it.
+func (s *Server) atlasKBURL(ctx context.Context) string {
+	if s == nil || s.atlasURL == nil || !isLocalCaller(ctx) {
 		return ""
 	}
 	base := s.atlasURL()
@@ -18,4 +27,47 @@ func (s *Server) atlasKBURL() string {
 		return webui.KBURL(base, name)
 	}
 	return base
+}
+
+// localCallerKey marks a request that reached the server from its own machine.
+// TRAP: it is set from the HTTP request by Handler, never from anything the
+// client sends in a tool argument; the key is unexported, so no request body
+// can carry it.
+type localCallerKey struct{}
+
+// forwardingHeaders are the request headers a reverse proxy adds. A proxy on
+// the server's own machine connects from loopback, so its remote users look
+// local; any of these says the peer is not the caller.
+var forwardingHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-IP"}
+
+// withLocalCaller marks r when its TCP peer is a loopback address and no
+// forwarding header is present.
+func withLocalCaller(r *http.Request) *http.Request {
+	if !isLocalRequest(r) {
+		return r
+	}
+	return r.WithContext(context.WithValue(r.Context(), localCallerKey{}, true))
+}
+
+func isLocalRequest(r *http.Request) bool {
+	for _, h := range forwardingHeaders {
+		if len(r.Header.Values(h)) > 0 {
+			return false
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if i := strings.IndexByte(host, '%'); i >= 0 { // IPv6 zone
+		host = host[:i]
+	}
+	return client.IsLoopbackHost(host)
+}
+
+// isLocalCaller reports whether the request under ctx came from this machine
+// (false under stdio, where no HTTP request exists).
+func isLocalCaller(ctx context.Context) bool {
+	v, _ := ctx.Value(localCallerKey{}).(bool)
+	return v
 }

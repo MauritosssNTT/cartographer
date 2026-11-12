@@ -169,7 +169,7 @@ func TestOpsSkillPointsToTheAtlas(t *testing.T) {
 		t.Fatal("the ops skill lost its diagnosis playbook")
 	}
 	section := text[i:j]
-	for _, want := range []string{"`ui_url`", "`kb_status`", "stdio", "CARTOGRAPHER_WEB_ENABLED=false", "service status", "stopped", "non-loopback"} {
+	for _, want := range []string{"`ui_url`", "`kb_status`", "stdio", "CARTOGRAPHER_WEB_ENABLED=false", "service status", "stopped", "own machine", "behind a proxy"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("the Atlas step lost %q (#1945)", want)
 		}

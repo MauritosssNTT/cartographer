@@ -869,11 +869,9 @@ func serveHTTP(addr string, boot func(phase func(string)) kbBootstrap, authCfg c
 				webMounted = true
 				log.Printf("Atlas UI on http://%s%s", displayAddr(addr), webui.MountPath)
 				// kb_status reports the Atlas link only for a loopback or wildcard
-				// bind (#1945); the reason is said here, on the server host, never
-				// in an MCP answer.
-				if u := webui.LoopbackURL(addr); u != "" {
-					multi.SetAtlasURL(u)
-				} else {
+				// bind, and only to a local caller (#1945); the reason is said
+				// here, on the server host, never in an MCP answer.
+				if !multi.SetAtlasAddr(addr) {
 					log.Printf("kb_status omits ui_url: %s is not a loopback address, and reporting it would tell every caller where the server listens", addr)
 				}
 			}
