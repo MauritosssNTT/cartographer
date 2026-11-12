@@ -1,6 +1,7 @@
 package kb
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BeppeTemp/cartographer/internal/graphalgo"
 	"github.com/BeppeTemp/cartographer/internal/okf"
 )
 
@@ -229,6 +231,12 @@ func TestGraphClusters_CapTailAndBudgets(t *testing.T) {
 		t.Fatalf("%d clusters, want %d", len(g.Clusters), MaxClusters+1)
 	}
 	tail := clusterByID(t, g, TailClusterID)
+	if tail.Slot != graphalgo.OtherSlot || g.Clusters[0].Slot == tail.Slot {
+		t.Fatalf("tail slot %d, want the neutral slot", tail.Slot)
+	}
+	if len(g.Communities) > MaxClusters {
+		t.Fatalf("%d communities listed for %d clusters", len(g.Communities), len(g.Clusters))
+	}
 	if tail.Label != "Other" || tail.Communities != 1100-MaxClusters || tail.Size != 2*(1100-MaxClusters) {
 		t.Fatalf("tail %+v", tail)
 	}
@@ -256,6 +264,10 @@ func TestGraphClusters_BudgetsAtScale(t *testing.T) {
 	g, err := k.GraphClusters(GraphClusterOptions{})
 	if err != nil {
 		t.Fatal(err)
+	}
+	body, _ := json.Marshal(g)
+	if len(body) > 150<<10 {
+		t.Fatalf("response is %d bytes uncompressed, want under 150 KiB", len(body))
 	}
 	if g.TotalNodes != 20000 || len(g.Clusters)+len(g.Nodes) > MaxClusterElements || len(g.Edges) > MaxClusterEdges {
 		t.Fatalf("%d total, %d clusters, %d edges", g.TotalNodes, len(g.Clusters), len(g.Edges))
@@ -349,11 +361,28 @@ func TestGraphClusters_Scope(t *testing.T) {
 	}
 	// A small Map of a big KB falls back to the flat graph.
 	s, _ := k.GraphClusters(GraphClusterOptions{Scope: "beta"})
-	if s.Mode != ClusterModeNodes || len(s.Nodes) != 120 || len(s.Communities) != len(g.Communities) {
+	flat, _ := k.GraphSnapshot(GraphSnapshotOptions{Scope: "beta"})
+	if s.Mode != ClusterModeNodes || len(s.Nodes) != 120 || len(s.Communities) != len(flat.Communities) {
 		t.Fatalf("%q, %d nodes", s.Mode, len(s.Nodes))
 	}
 	// The cluster id does not depend on the scope.
 	if clusterIDOf(t, k, clusterConcept("alpha", 0, 0)) == "" {
 		t.Fatal("no cluster")
+	}
+}
+
+func TestGraphClusters_DroppedUnfoldsAreDeduplicated(t *testing.T) {
+	t.Parallel()
+	k := buildClusterKB(t, twoBlocks, nil)
+	g, _ := k.GraphClusters(GraphClusterOptions{Unfold: []string{"c:nope", "c:nope", "c:other"}})
+	if !reflect.DeepEqual(g.DroppedUnfolds, []string{"c:nope", "c:other"}) {
+		t.Fatalf("dropped %v", g.DroppedUnfolds)
+	}
+	// Focus plus the same cluster in Unfold unfolds it once and drops nothing.
+	focus := clusterConcept("alpha", 1, 1)
+	id := clusterIDOf(t, k, focus)
+	f, _ := k.GraphClusters(GraphClusterOptions{Focus: focus, Unfold: []string{id, id}})
+	if len(f.Unfolded) != 1 || len(f.DroppedUnfolds) != 0 {
+		t.Fatalf("unfolded %v dropped %v", f.Unfolded, f.DroppedUnfolds)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/BeppeTemp/cartographer/internal/graphalgo"
 	"github.com/BeppeTemp/cartographer/internal/okf"
 )
 
@@ -17,11 +18,14 @@ const (
 	ClusterThreshold = DefaultGraphNodeLimit
 	// MaxClusters is how many communities become clusters; the rest share one
 	// synthetic tail cluster.
-	MaxClusters         = 150
-	MaxClusterElements  = 400
-	MaxClusterEdges     = 1500
-	MinUnfoldMembers    = 50
-	TailClusterID       = "c:~tail"
+	MaxClusters        = 150
+	MaxClusterElements = 400
+	MaxClusterEdges    = 1500
+	MinUnfoldMembers   = 50
+	TailClusterID      = "c:~tail"
+	// TailSlot is the colour slot of the tail: the neutral one singletons and
+	// the long tail of communities share in the flat view (graphalgo.OtherSlot).
+	TailSlot            = graphalgo.OtherSlot
 	clusterIDPrefix     = "c:"
 	ClusterModeNodes    = "nodes"
 	ClusterModeClusters = "clusters"
@@ -99,6 +103,7 @@ type GraphClusterOptions struct {
 type clusterGroup struct {
 	GraphCluster
 	members []int // in-scope member indexes, by PageRank
+	rank    int   // the community's rank, -1 for the tail
 }
 
 // GraphClusters projects the visible link graph onto its communities.
@@ -136,7 +141,6 @@ func (kb *KB) GraphClusters(opts GraphClusterOptions) (ClusterGraph, error) {
 	}
 	out.Mode = ClusterModeClusters
 	out.TotalNodes = scopedCount
-	out.Communities = vg.communityList()
 
 	groups := vg.clusterGroups(inScope)
 	byID := make(map[string]*clusterGroup, len(groups))
@@ -168,9 +172,7 @@ func (kb *KB) GraphClusters(opts GraphClusterOptions) (ClusterGraph, error) {
 	for _, id := range order {
 		g, ok := byID[id]
 		if !ok {
-			if !contains(out.DroppedUnfolds, id) {
-				out.DroppedUnfolds = append(out.DroppedUnfolds, id)
-			}
+			dropUnfold(&out, id)
 			continue
 		}
 		if _, dup := unfolded[id]; dup {
@@ -181,7 +183,7 @@ func (kb *KB) GraphClusters(opts GraphClusterOptions) (ClusterGraph, error) {
 		// as dropped, so the budget is never exceeded.
 		room := MaxClusterElements - elements + 1
 		if room < min(len(g.members), MinUnfoldMembers) {
-			out.DroppedUnfolds = append(out.DroppedUnfolds, id)
+			dropUnfold(&out, id)
 			continue
 		}
 		pick := g.members
@@ -219,6 +221,20 @@ func (kb *KB) GraphClusters(opts GraphClusterOptions) (ClusterGraph, error) {
 			Expanded: m.expanded, SelfLink: vg.selfLink[id], InDegree: vg.inDegree[id], OutDegree: vg.outDegree[id],
 			PageRank: math.Round(vg.pagerank[u]*1e6) / 1e6, Community: vg.communityOf[u]})
 	}
+
+	// Communities lists only the ones a drawn cluster or node refers to, so the
+	// response stays within the budgets whatever the KB size; the others share
+	// the neutral slot and the client colours a missing rank neutral.
+	ranks := map[int]struct{}{}
+	for _, g := range groups {
+		if g.rank >= 0 {
+			ranks[g.rank] = struct{}{}
+		}
+	}
+	for _, u := range shownIdx {
+		ranks[vg.communityOf[u]] = struct{}{}
+	}
+	out.Communities = vg.communityList(ranks)
 
 	// element names the drawn thing a node stands for: itself, its folded
 	// cluster, or nothing (a member of an unfolded cluster that did not fit).
@@ -285,12 +301,16 @@ func (kb *KB) GraphClusters(opts GraphClusterOptions) (ClusterGraph, error) {
 	return out, nil
 }
 
-// communityList is SnapshotCommunity for every community of the visible graph.
-func (vg *visibleGraph) communityList() []SnapshotCommunity {
-	list := make([]SnapshotCommunity, len(vg.communities))
+// communityList is SnapshotCommunity for the communities of the given ranks
+// (all of them when ranks is nil), in rank order.
+func (vg *visibleGraph) communityList(ranks map[int]struct{}) []SnapshotCommunity {
+	list := make([]SnapshotCommunity, 0, len(vg.communities))
 	for i, c := range vg.communities {
+		if _, ok := ranks[i]; ranks != nil && !ok {
+			continue
+		}
 		anchor := vg.ids[c.Anchor]
-		list[i] = SnapshotCommunity{Rank: c.Rank, Size: c.Size, Anchor: anchor, AnchorTitle: vg.metas[anchor].title, Slot: c.Slot}
+		list = append(list, SnapshotCommunity{Rank: c.Rank, Size: c.Size, Anchor: anchor, AnchorTitle: vg.metas[anchor].title, Slot: c.Slot})
 	}
 	return list
 }
@@ -316,7 +336,7 @@ func (vg *visibleGraph) clusterGroups(inScope func(i int) bool) []*clusterGroup 
 		}
 	}
 	sort.SliceStable(cs, func(i, j int) bool { return len(cs[i].members) > len(cs[j].members) })
-	named := func(id, label string, slot int, members []int) *clusterGroup {
+	named := func(id, label string, slot, rank int, members []int) *clusterGroup {
 		counts := map[string]int{}
 		for _, u := range members {
 			counts[vg.metas[vg.ids[u]].collection]++
@@ -327,7 +347,7 @@ func (vg *visibleGraph) clusterGroups(inScope func(i int) bool) []*clusterGroup 
 				dominant, best = c, n
 			}
 		}
-		return &clusterGroup{GraphCluster: GraphCluster{ID: id, Label: label, Collection: dominant, Size: len(members), Slot: slot}, members: members}
+		return &clusterGroup{rank: rank, GraphCluster: GraphCluster{ID: id, Label: label, Collection: dominant, Size: len(members), Slot: slot}, members: members}
 	}
 	var groups []*clusterGroup
 	var tail []int
@@ -341,7 +361,7 @@ func (vg *visibleGraph) clusterGroups(inScope func(i int) bool) []*clusterGroup 
 		// Named by the top member of the whole community, so the id does not
 		// depend on the scope.
 		top := vg.ids[vg.members[c.rank][0]]
-		groups = append(groups, named(clusterIDPrefix+string(top), vg.memberLabel(top), vg.communities[c.rank].Slot, c.members))
+		groups = append(groups, named(clusterIDPrefix+string(top), vg.memberLabel(top), vg.communities[c.rank].Slot, c.rank, c.members))
 	}
 	if len(tail) > 0 {
 		sort.Slice(tail, func(a, b int) bool {
@@ -350,7 +370,7 @@ func (vg *visibleGraph) clusterGroups(inScope func(i int) bool) []*clusterGroup 
 			}
 			return tail[a] < tail[b]
 		})
-		g := named(TailClusterID, "Other", 0, tail)
+		g := named(TailClusterID, "Other", TailSlot, -1, tail)
 		g.Communities = tailCommunities
 		groups = append(groups, g)
 	}
@@ -379,11 +399,12 @@ func withFocus(pick []int, focus int) []int {
 	return out
 }
 
-func contains(l []string, s string) bool {
-	for _, x := range l {
-		if x == s {
-			return true
+// dropUnfold reports an unfold the response cannot honour, once per id.
+func dropUnfold(out *ClusterGraph, id string) {
+	for _, x := range out.DroppedUnfolds {
+		if x == id {
+			return
 		}
 	}
-	return false
+	out.DroppedUnfolds = append(out.DroppedUnfolds, id)
 }
