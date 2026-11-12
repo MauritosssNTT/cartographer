@@ -525,16 +525,16 @@ nudges, so a seeded stray page makes "no nudge" non-vacuous and a provisioned co
 it; and the nudge window is shared by every stateless connection of a KB, so the generic calls come first and
 the control last.
 
-**The film's branch is asserted the same way, and its render only in CI.** `23_film_publish` runs
+**The films' branch is asserted the same way, and their render only in CI.** `23_film_publish` runs
 `film/publish.sh` and `film/film-needed.sh` (D1068) against a scratch repository and a bare origin: no branch
 means a render is needed; after a publish the same revision needs none; a change to a file in each class of the
 film's inputs (`film/inputs.sh`) needs one and a change outside them (`README.md`, another `web/src` file) none;
-publishing twice leaves one commit with `README.md`, `film.webp` and the `Film-Tree:` trailer; an input missing
-at the revision is exit 2. `TestFilmImportsStayInsideTheHashedInputs` (`internal/repodocs`) fails when a file reached
+publishing twice leaves one commit with `README.md`, both fixture films (`film.webp`, the launch film, and another) and the `Film-Tree:` trailer; with no argument it publishes every `film/out/*.webp` present, still in one commit; an input missing
+at the revision is exit 2. `TestFilmPagesAreTheFilmList` (`internal/repodocs`) fails when `film/films.txt`, the one list of films, and the `film/*.html` pages disagree (a page nobody lists, a listed film with no page or no script) or when `vite.config.ts`, `render.sh` or `record.mjs` stops reading that list. `TestFilmImportsStayInsideTheHashedInputs` (`internal/repodocs`) fails when a file reached
 from `film/` by imports (followed transitively: multi-line, side-effect, dynamic and `?raw`/`?url` forms) is outside that list, and `TestPreviewCallsTheFilmWithoutToleratingFailure` pins the workflow (read-only `render`, `publish` on main only)
 shape (no `continue-on-error`, write only in `publish`, actions pinned). The render itself needs a browser,
 ffmpeg and minutes of software WebGL, so it is exercised only by `film.yml`: no test or pull-request check
-renders it, except `film-check.yml`: on a pull request touching `film/` or the film workflows it renders 30 frames
+renders them (the size cap per file, `FILM_MAX_BYTES`, is checked by `record.mjs` there), except `film-check.yml`: on a pull request touching `film/` or the film workflows it renders 30 frames of each film
 (`film/render.sh --no-mp4 --frames 30`, same pinned actions and packages, no cache (`package-manager-cache: false`), read-only) so the encode runs on the
 runner's tool versions before the release candidate does. It is not a required check.
 

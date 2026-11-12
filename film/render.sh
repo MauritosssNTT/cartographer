@@ -1,14 +1,49 @@
 #!/usr/bin/env bash
-# Renders the README film headless (D1068): starts the film's Vite server, runs film/record.mjs against it and
-# stops the server whatever happens. Writes film/out/film.webp (and film/out/film.mp4 unless --no-mp4).
+# Renders the README films headless (D1068): starts the films' Vite server once, runs film/record.mjs against it for
+# each film and stops the server whatever happens. Writes film/out/film.webp for the launch film and
+# film/out/<name>.webp for another (and the .mp4 beside it unless --no-mp4).
 #
-# Usage, from anywhere: film/render.sh [record.mjs options, e.g. --no-mp4]
+# Usage, from anywhere: film/render.sh [--films a,b] [record.mjs options, e.g. --no-mp4 --frames 30]
+# --films picks films of film/films.txt (the one list of films); the default is all of them. The other options go
+# to record.mjs as they are. FILM_MAX_BYTES caps the WebP of each film (record.mjs).
 # Needs `cd web && npm ci` and Chromium (npx playwright install chromium), plus ffmpeg and img2webp (webp package).
 # bash 3.2 compatible: it runs on macOS too.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+ALL=()
+while IFS= read -r name; do
+    [ -n "$name" ] && ALL+=("$name")
+done < film/films.txt
+[ "${#ALL[@]}" -gt 0 ] || { echo "render: film/films.txt lists no film" >&2; exit 1; }
+
+PICK=("${ALL[@]}")
+REST=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --films)
+        [ $# -ge 2 ] || { echo "render: --films needs a comma-separated list" >&2; exit 2; }
+        IFS=, read -r -a PICK <<<"$2"
+        shift 2
+        ;;
+    *)
+        REST+=("$1")
+        shift
+        ;;
+    esac
+done
+[ "${#PICK[@]}" -gt 0 ] || { echo "render: --films names no film" >&2; exit 2; }
+for name in "${PICK[@]}"; do
+    known=""
+    for a in "${ALL[@]}"; do [ "$a" = "$name" ] && known=1; done
+    [ -n "$known" ] || { echo "render: unknown film \"${name}\", film/films.txt lists: ${ALL[*]}" >&2; exit 2; }
+done
+
+# The file a film is published under: the launch film keeps the name the README embeds.
+webp_of() { if [ "$1" = launch ]; then echo film/out/film.webp; else echo "film/out/$1.webp"; fi; }
+
 mkdir -p film/out
 LOG="film/out/vite.log"
 URL="http://localhost:5180/"
@@ -30,8 +65,11 @@ if [ -z "$up" ]; then
     exit 1
 fi
 
-rm -f film/out/film.webp
-node film/record.mjs "$@"
-
-[ -s film/out/film.webp ] || { echo "render: film/out/film.webp is missing or empty" >&2; exit 1; }
-echo "render: film/out/film.webp is $(wc -c < film/out/film.webp | tr -d ' ') bytes"
+for name in "${PICK[@]}"; do
+    out="$(webp_of "$name")"
+    rm -f "$out"
+    # ${REST[@]+...}: an empty array is an unbound variable under `set -u` in bash 3.2.
+    node film/record.mjs --film "$name" ${REST[@]+"${REST[@]}"}
+    [ -s "$out" ] || { echo "render: ${out} is missing or empty" >&2; exit 1; }
+    echo "render: ${out} is $(wc -c < "$out" | tr -d ' ') bytes"
+done

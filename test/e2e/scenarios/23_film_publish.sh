@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# scenarios/23_film_publish.sh — the README film's orphan branch (D1068).
+# scenarios/23_film_publish.sh — the README films' orphan branch (D1068).
 #
-# The film lives on `readme-film`, one force-pushed commit carrying a Film-Tree:
-# trailer, and the release candidate renders it only when the hash of the film's
+# The films live on `readme-film`, one force-pushed commit carrying a Film-Tree:
+# trailer, and the release candidate renders them only when the hash of the films'
 # inputs (film/inputs.sh) differs from the trailer. This drives film/publish.sh and
 # film/film-needed.sh against a scratch repository and a bare "origin" (no
 # network, no browser).
@@ -13,9 +13,12 @@
 #   3. A change in each class of input (film/, graph3d/, palette.ts, theme.ts,
 #      package-lock.json) needs a render.
 #   4. A change outside the set (README.md, another web/src file) needs none.
-#   5. Publishing twice leaves one commit with README.md, film.webp and the
-#      trailer, and main's history untouched.
-#   6. An input missing at the revision is exit 2 naming it; a bad revision is 2.
+#   5. Publishing twice leaves one commit with README.md, both films (two fixture
+#      files: the launch film's film.webp and another film) and the trailer,
+#      and main's history untouched.
+#   6. With no argument, publish takes every film/out/*.webp present, still in
+#      one commit; with none present it is exit 1.
+#   7. An input missing at the revision is exit 2 naming it; a bad revision is 2.
 #
 # Expected environment variables: E2E_TMP_DIR, REPO_ROOT.
 
@@ -76,7 +79,8 @@ echo doc-1 > README.md
 git add . && git commit -qm "film 1"
 git remote add origin "$ORIGIN"
 head -c 4096 /dev/urandom > film.webp
-PUBLISH=(film/publish.sh film.webp)
+head -c 4096 /dev/urandom > plugins.webp
+PUBLISH=(film/publish.sh film.webp plugins.webp)
 NEEDED=(film/film-needed.sh HEAD)
 
 echo ""
@@ -120,7 +124,14 @@ assert_file_contains "${DIR}/message.txt" "film: rendered from $(git rev-parse -
 assert_file_contains "${DIR}/message.txt" "Film-Tree: "
 git --git-dir="$ORIGIN" ls-tree --name-only readme-film > "${DIR}/tree.txt"
 assert_file_contains "${DIR}/tree.txt" "film.webp"
+assert_file_contains "${DIR}/tree.txt" "plugins.webp"
 assert_file_contains "${DIR}/tree.txt" "README.md"
+if [[ "$(git --git-dir="$ORIGIN" rev-parse readme-film:film.webp)" == "$(git hash-object film.webp)" &&
+    "$(git --git-dir="$ORIGIN" rev-parse readme-film:plugins.webp)" == "$(git hash-object plugins.webp)" ]]; then
+    _assert_pass "each file is in the tree with its own content"
+else
+    _assert_fail "a file in the tree is not the one published"
+fi
 if git --git-dir="$ORIGIN" rev-parse --verify -q main >/dev/null; then
     _assert_fail "the publish pushed to main"
 else
@@ -128,7 +139,32 @@ else
 fi
 
 echo ""
-echo "--- Phase 6: an input missing, a bad revision ---"
+echo "--- Phase 6: no argument publishes every film/out/*.webp ---"
+check "no film rendered is exit 1" 1 film/publish.sh
+assert_file_contains "${DIR}/out.txt" "no film/out/*.webp"
+mkdir -p film/out
+head -c 2048 /dev/urandom > film/out/film.webp
+head -c 2048 /dev/urandom > film/out/deployment.webp
+check "publish with no argument" 0 film/publish.sh
+git --git-dir="$ORIGIN" ls-tree --name-only readme-film > "${DIR}/tree.txt"
+assert_file_contains "${DIR}/tree.txt" "film.webp"
+assert_file_contains "${DIR}/tree.txt" "deployment.webp"
+assert_file_contains "${DIR}/tree.txt" "README.md"
+if grep -q "plugins.webp" "${DIR}/tree.txt"; then
+    _assert_fail "the earlier plugins.webp survived a publish that did not carry it"
+else
+    _assert_pass "the branch holds exactly the files of the last publish"
+fi
+COMMITS="$(git --git-dir="$ORIGIN" rev-list --count readme-film)"
+if [[ "$COMMITS" -eq 1 ]]; then
+    _assert_pass "readme-film still has exactly one commit"
+else
+    _assert_fail "readme-film has ${COMMITS} commits, want 1"
+fi
+rm -r film/out
+
+echo ""
+echo "--- Phase 7: an input missing, a bad revision ---"
 git rm -q web/src/lib/palette.ts && git commit -qm "rename palette"
 check "a missing input is exit 2" 2 "${NEEDED[@]}"
 assert_file_contains "${DIR}/out.txt" "web/src/lib/palette.ts"

@@ -71,6 +71,66 @@ func TestFilmImportsStayInsideTheHashedInputs(t *testing.T) {
 	}
 }
 
+// The films are the lines of film/films.txt, the one list render.sh, record.mjs and the Vite config read. A film's
+// page is film/<name>.html, except the launch film's, which is film/index.html (its URL is the server's root and
+// its file keeps the name the README embeds). A page nobody lists is never rendered; a listed film with no page fails
+// the render on the release candidate, so both are caught here, with no browser.
+func TestFilmPagesAreTheFilmList(t *testing.T) {
+	root := repoRoot(t)
+	var films []string
+	seen := map[string]bool{}
+	for _, name := range strings.Fields(readFile(t, root, "film/films.txt")) {
+		if !regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`).MatchString(name) {
+			t.Errorf("film/films.txt: %q is not a film name (lower-case words joined by -)", name)
+		}
+		if seen[name] {
+			t.Errorf("film/films.txt lists %s twice", name)
+		}
+		seen[name] = true
+		films = append(films, name)
+	}
+	if !seen["launch"] {
+		t.Error("film/films.txt does not list launch: the README embeds its film")
+	}
+
+	pages := map[string]bool{}
+	for _, name := range films {
+		page := name + ".html"
+		if name == "launch" {
+			page = "index.html"
+		}
+		pages[page] = true
+		src := readFile(t, root, "film/"+page)
+		if !strings.Contains(src, `id="stage"`) {
+			t.Errorf("film/%s has no #stage element, which film/src/kit.ts scales and the films append to", page)
+		}
+		entry := regexp.MustCompile(`<script type="module" src="/src/([^"]+)"`).FindStringSubmatch(src)
+		if entry == nil {
+			t.Errorf("film/%s loads no module script from /src", page)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, "film", "src", filepath.FromSlash(entry[1]))); err != nil {
+			t.Errorf("film/%s loads /src/%s, which does not exist: %v", page, entry[1], err)
+		}
+	}
+	html, err := filepath.Glob(filepath.Join(root, "film", "*.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range html {
+		if name := filepath.Base(h); !pages[name] {
+			t.Errorf("film/%s is a page of no film in film/films.txt: list the film there or remove the page", name)
+		}
+	}
+
+	// The three programs that act on the list read the file instead of repeating it.
+	for _, f := range []string{"film/vite.config.ts", "film/render.sh", "film/record.mjs"} {
+		if !strings.Contains(readFile(t, root, f), "films.txt") {
+			t.Errorf("%s does not read film/films.txt: a film added there would be skipped by it", f)
+		}
+	}
+}
+
 func isFilmCode(p string) bool {
 	switch filepath.Ext(p) {
 	case ".ts", ".tsx", ".js", ".mjs":
