@@ -88,6 +88,10 @@ func netEnv(dir string, extra []string) []string {
 	defer cancel()
 	cfg := procattr.Hide(exec.CommandContext(ctx, "git", "-C", dir, "config", "--get", "core.sshCommand"))
 	cfg.Env = env
+	// Like netCommand: kill the group and bound the pipes, so a surviving child
+	// (a Windows shim) cannot hold Output() past the 5s deadline.
+	killGroupOnCancel(cfg)
+	cfg.WaitDelay = time.Second
 	if out, err := cfg.Output(); err == nil && strings.TrimSpace(string(out)) != "" {
 		return env
 	}
@@ -1086,7 +1090,10 @@ func fetchWith(dir, remote string, opts, env []string) error {
 // -- about 75s on macOS -- and every tool call waiting on the KB's git lock
 // with it, past the client's 30s HTTP timeout (#348). The fetch is the
 // operation that meets an unreachable remote first; pull and push run after a
-// fetch has just succeeded. A variable so tests can shorten it.
+// fetch has just succeeded. The deadline starts after netEnv, so one fetch
+// takes at most FetchTimeout plus the separate <=5s core.sshCommand probe
+// (skipped when GIT_SSH_COMMAND or GIT_SSH is set). A variable so tests can
+// shorten it.
 var FetchTimeout = 15 * time.Second
 
 // RemoteTimeoutError reports a git remote that did not answer in time. It is
@@ -1482,7 +1489,9 @@ func pushError(what string, err error, out string) error {
 // PushTimeout bounds one git push. A push carries data, so it gets a longer
 // bound than FetchTimeout, but it is bounded all the same: an unbounded push
 // holds the KB's git lock, and every tool call behind it, for as long as the
-// remote stalls. A variable so tests can shorten it.
+// remote stalls. As for FetchTimeout, the deadline starts after netEnv: a push
+// takes at most PushTimeout plus the <=5s core.sshCommand probe. A variable so
+// tests can shorten it.
 var PushTimeout = 60 * time.Second
 
 // PushSetUpstream pushes branch to remote and sets it as the branch's
