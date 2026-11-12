@@ -80,7 +80,6 @@ test/e2e/
     assert.sh
     kb.sh
     selftest.sh
-    selftest.sh
     server.sh
   fixtures/
     kb-homelab-lite/

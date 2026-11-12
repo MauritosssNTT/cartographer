@@ -24,14 +24,25 @@ WITHOUT_NEEDLE="${FILLER}"
 SELF_FAILURES=0
 
 # expect <pass|fail> <label> <assert_fn> <args...>
-#   Runs the helper, discards its [PASS]/[FAIL] line and the failure it counted,
-#   and checks that it answered <pass|fail> as the body demands.
+#   Runs the helper in a subshell (its failure count is thrown away with it) and
+#   reads the verdict from the [PASS]/[FAIL] line it printed first. A helper that
+#   does not exist (renamed, typo) or printed neither line (exit 127, a crash)
+#   is a failure of the self-test whatever was expected, never a "pass".
 expect() {
-    local want="$1" label="$2"; shift 2
-    local before="$E2E_FAILURES" got
-    "$@" >/dev/null
-    if [[ "$E2E_FAILURES" -gt "$before" ]]; then got=fail; else got=pass; fi
-    E2E_FAILURES="$before"
+    local want="$1" label="$2" fn="$3" out first got
+    shift 2
+    if ! declare -F "$fn" >/dev/null; then
+        echo "[selftest] FAIL ${label}: helper ${fn} is not defined"
+        SELF_FAILURES=$((SELF_FAILURES + 1))
+        return
+    fi
+    out="$("$fn" "${@:2}" 2>&1)" || true
+    first="${out%%$'\n'*}"
+    case "$first" in
+        '[PASS]'*) got=pass ;;
+        '[FAIL]'*) got=fail ;;
+        *) got=none ;;
+    esac
     if [[ "$got" == "$want" ]]; then
         echo "[selftest] ok   ${label} (${want})"
     else
@@ -56,8 +67,14 @@ expect pass 'assert_mcp_ok passes a body without isError' \
     assert_mcp_ok d "$WITHOUT_NEEDLE"
 
 # The body must really reproduce the trap, or the checks above prove nothing.
+# The body is larger than a pipe, so the old form dies of SIGPIPE every time
+# (the status is 141 under pipefail): if it does not, the control no longer
+# proves the trap and the self-test fails rather than stay green.
 if echo "$WITH_NEEDLE" | grep -q "$NEEDLE"; then # e2e-pipe-ok: the trap itself
-    echo "[selftest] warn: the old pipe did not hit SIGPIPE on this host: the test no longer discriminates"
+    echo "[selftest] FAIL control: the old pipe form did not hit SIGPIPE: the 300 KB body no longer proves the trap, so the cases above prove nothing"
+    SELF_FAILURES=$((SELF_FAILURES + 1))
+else
+    echo "[selftest] ok   control: the old pipe form hits SIGPIPE on this host"
 fi
 
 if [[ "$SELF_FAILURES" -gt 0 ]]; then
