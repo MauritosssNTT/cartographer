@@ -850,20 +850,20 @@ export function App() {
     [clusterGraph, unfoldCluster, foldCluster],
   );
   // The switch is offered only where there is something to cluster: a KB
-  // above the threshold, drawn clustered or forced flat (a small Map answered
-  // flat by the server offers none).
+  // above the threshold, unless the clusters route answered this Map flat. It
+  // stays while a switch is loading, so focus never drops with it.
   const graphLevel = useMemo<GraphLevel | undefined>(
     () =>
       clustersAvailable() &&
       kbTotal !== undefined &&
       kbTotal > clusterThreshold.current &&
-      (clusterView !== null || view.graph === "nodes")
+      clusterGraph?.mode !== "nodes"
         ? {
             mode: view.graph === "nodes" ? "nodes" : "clusters",
             onChange: (mode) => navigate({ graph: mode === "nodes" ? "nodes" : null }),
           }
         : undefined,
-    [kbTotal, view.graph, navigate, clusterView],
+    [kbTotal, view.graph, navigate, clusterGraph],
   );
 
   const expandConcept = useCallback(

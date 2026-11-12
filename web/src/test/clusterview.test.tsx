@@ -230,6 +230,28 @@ describe("the cluster view in the Atlas", () => {
     await waitFor(() => expect(new URLSearchParams(window.location.search).get("graph")).toBe("nodes"));
   });
 
+  it("keeps the switch, and its focus, while the clusters answer is on its way", async () => {
+    window.history.replaceState(null, "", "/ui/?kb=kb-a&graph=nodes");
+    let release!: () => void;
+    const slow = new Promise<void>((r) => (release = r));
+    const m = stubApi({ "/overview": () => json(large) });
+    const route = m.getMockImplementation()!;
+    m.mockImplementation(async (url: string) => {
+      if (!url.includes("/graph/clusters")) return route(url);
+      await slow;
+      return json(answer);
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const level = await screen.findByRole("group", { name: "Graph level" });
+    const clustersButton = within(level).getByRole("button", { name: "Clusters" });
+    await user.click(clustersButton);
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get("graph")).toBeNull());
+    expect(screen.getByRole("group", { name: "Graph level" })).toBeInTheDocument();
+    expect(document.activeElement).toBe(clustersButton);
+    release();
+  });
+
   it("offers no level switch over a Map the server answers flat", async () => {
     window.history.replaceState(null, "", "/ui/?kb=kb-a&scope=infra");
     stubApi({
