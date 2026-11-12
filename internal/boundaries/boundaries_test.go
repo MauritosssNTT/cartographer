@@ -1,6 +1,7 @@
 package boundaries
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"io/fs"
@@ -235,6 +236,51 @@ func TestStarcoreSeamsAreTestOnly(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if checked == 0 {
+		t.Fatal("no file checked")
+	}
+}
+
+// starcore.Replay makes http.request answer from recordings instead of a
+// network (D-new-plugin-conformance-kit). It is for `plugin test` alone: a
+// Surveyor that set it would poll canned data as if it were live. The runtime
+// carries it, the conformance kit sets it, and no other non-test file names
+// the identifier (comments excluded).
+func TestOnlyThePluginTestKitSetsReplay(t *testing.T) {
+	allowed := map[string]bool{
+		"internal/plugin/starcore/replay.go":          true,
+		"internal/plugin/starcore/call.go":            true,
+		"internal/plugin/starcore/http.go":            true,
+		"internal/plugin/starcore/recipes/recipes.go": true,
+		"internal/surveyor/recipe/recipetest/run.go":  true,
+	}
+	root := filepath.Join("..", "..")
+	checked := 0
+	for _, dir := range []string{"internal", "cmd"} {
+		err := filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			af, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+			if err != nil {
+				return nil
+			}
+			checked++
+			rel, _ := filepath.Rel(root, path)
+			rel = filepath.ToSlash(rel)
+			ast.Inspect(af, func(n ast.Node) bool {
+				if id, ok := n.(*ast.Ident); ok && id.Name == "Replay" && !allowed[rel] {
+					t.Errorf("%s names Replay, which only the plugin test kit may set", rel)
+					return false
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	if checked == 0 {
 		t.Fatal("no file checked")
