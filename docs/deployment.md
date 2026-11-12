@@ -1651,7 +1651,9 @@ Below it, **Report candidates** (D1925) lists what the Surveyors noticed that a 
 Cartographer project, per Surveyor: the kind in words (tool error, protocol mismatch, contract mismatch), the tool and the
 code, how many times it was seen and when it was last seen (the server's stamp, worded against the server's clock). It is
 read from `GET /api/ui/v1/feedback/candidates`, which is server-wide and already filtered by what the caller sees whole;
-the Atlas shows the candidates that name the picked KB or none, and starts blank when the KB changes. Each row has a
+the Atlas shows the candidates that name the picked KB or none, starts blank when the KB changes, and reads the
+list again every minute (candidates live in the server's memory and change without a commit). The section stands on
+its own, not inside Surveyor runs: a protocol mismatch can be held with no run reported. Each row has a
 **Draft report** button: it asks `GET /api/ui/v1/feedback/candidates/draft?id=` (a `GET`, pure computation: the Atlas
 stays read-only and no model runs) and opens, under the row, the redacted title and body in read-only fields, the
 duplicate-search link first (GitHub destinations only), then **Open the report form**, a link that opens in a new tab

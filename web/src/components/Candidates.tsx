@@ -8,16 +8,30 @@ import { age, useResilient } from "./Surveyors";
 const feedbackOff = (err: ApiError) => err.status === 404 && err.code === "feedback_off";
 
 /**
+ * Candidates live in the server's memory and change without a commit (a
+ * Surveyor whose tool calls fail writes nothing), so the list is read again on
+ * this timer, whatever the live counter does.
+ */
+export const CANDIDATES_REFRESH = { ms: 60_000 };
+
+/**
  * The Surveyors' report candidates (D1925) that concern the KB, read-only. The
  * route is server-wide and the server filters it by what the caller sees whole;
  * a candidate that names another KB is left out here, and the list starts blank
  * when the KB changes. A 5xx or a 404 that is not `feedback_off` (a restart, an
- * older server) keeps the last list and tries again with back-off.
+ * older server) keeps the last list and tries again with back-off; it is also
+ * read again every CANDIDATES_REFRESH.ms.
  */
 export function useReportCandidates(kb: string | null, live: number): ReportCandidate[] {
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!kb) return;
+    const timer = window.setInterval(() => setTick((n) => n + 1), CANDIDATES_REFRESH.ms);
+    return () => window.clearInterval(timer);
+  }, [kb]);
   const list = useResilient(
     kb,
-    live,
+    live + tick,
     (_kb, signal) => fetchFeedbackCandidates(signal).then((res) => (Array.isArray(res?.candidates) ? res.candidates : [])),
     feedbackOff,
   );

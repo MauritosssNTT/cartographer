@@ -2,7 +2,7 @@ import { render, renderHook, screen, waitFor, within } from "@testing-library/re
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
-import { useReportCandidates } from "../components/Candidates";
+import { CANDIDATES_REFRESH, useReportCandidates } from "../components/Candidates";
 import { retry } from "../components/Surveyors";
 import { componentRow, componentsAnswer, json, stubApi } from "./fixtures";
 
@@ -84,9 +84,10 @@ describe("Activity: Report candidates", () => {
   });
 
   it("is absent when the operator switched feedback off (404 feedback_off)", async () => {
-    stubApi();
+    const fetchMock = stubApi();
     render(<App />);
     await screen.findByRole("region", { name: /activity/i });
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).includes(LIST))).toBe(true));
     expect(screen.queryByRole("heading", { name: /Report candidates/ })).not.toBeInTheDocument();
   });
 
@@ -207,6 +208,44 @@ describe("Work: report candidates badge", () => {
 });
 
 describe("useReportCandidates", () => {
+  afterEach(() => {
+    CANDIDATES_REFRESH.ms = 60_000;
+    retry.baseMs = 5000;
+  });
+
+  it("is read again on its timer, so a candidate shows without a commit", async () => {
+    CANDIDATES_REFRESH.ms = 20;
+    let calls = 0;
+    stubApi({ [LIST]: () => json({ candidates: ++calls === 1 ? [] : [cand()], destination: "github" }) });
+    const { result } = renderHook(() => useReportCandidates("kb-a", 0));
+    await waitFor(() => expect(result.current.map((c) => c.id)).toEqual(["c1"]));
+  });
+
+  it("clears a list already shown when feedback is switched off", async () => {
+    CANDIDATES_REFRESH.ms = 20;
+    retry.baseMs = 5;
+    let calls = 0;
+    stubApi({
+      [LIST]: () => (++calls === 1 ? json({ candidates: [cand()], destination: "github" }) : json({ error: { code: "feedback_off", message: "off" } }, 404)),
+    });
+    const { result } = renderHook(() => useReportCandidates("kb-a", 0));
+    await waitFor(() => expect(result.current).toHaveLength(1));
+    await waitFor(() => expect(result.current).toHaveLength(0));
+  });
+
+  it("keeps a list already shown through a transient failure", async () => {
+    CANDIDATES_REFRESH.ms = 20;
+    retry.baseMs = 10_000; // no recovery inside the test: the list must survive the failure itself
+    let calls = 0;
+    stubApi({
+      [LIST]: () => (++calls === 1 ? json({ candidates: [cand()], destination: "github" }) : json({ error: { code: "internal", message: "boom" } }, 500)),
+    });
+    const { result } = renderHook(() => useReportCandidates("kb-a", 0));
+    await waitFor(() => expect(result.current).toHaveLength(1));
+    await waitFor(() => expect(calls).toBeGreaterThan(1));
+    expect(result.current.map((c) => c.id)).toEqual(["c1"]);
+  });
+
   it("shows nothing of the previous KB when the KB changes", async () => {
     stubApi({ [LIST]: list(cand(), cand({ id: "c2", kb: "kb-b" })) });
     const { result, rerender } = renderHook(({ kb }) => useReportCandidates(kb, 0), { initialProps: { kb: "kb-a" } });
