@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -15,26 +17,53 @@ import (
 // Windows leg failed (not the last 40 lines of the leg), and the lander names the scenarios and
 // the panicking packages in the issue it files. These tests pin the three ends of that chain.
 
-// failingOf runs scripts/land.sh's failing() over a gate log.
-func failingOf(t *testing.T, body string) string {
+// landFns returns the text of the named top-level functions of scripts/land.sh, to run them
+// alone: the script is a lander, not a library.
+func landFns(t *testing.T, names ...string) string {
+	t.Helper()
+	script := readFile(t, repoRoot(t), "scripts/land.sh")
+	var fns strings.Builder
+	for _, name := range names {
+		start := strings.Index(script, "\n"+name+"() {")
+		if start < 0 {
+			t.Fatalf("%s() not found in scripts/land.sh", name)
+		}
+		end := strings.Index(script[start+1:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("%s() has no end in scripts/land.sh", name)
+		}
+		fns.WriteString(script[start : start+1+end+3])
+	}
+	return fns.String()
+}
+
+// landBash runs a bash snippet after the named functions of scripts/land.sh.
+func landBash(t *testing.T, fns []string, snippet string, env []string, args ...string) string {
 	t.Helper()
 	needBash(t)
-	script := readFile(t, repoRoot(t), "scripts/land.sh")
-	start := strings.Index(script, "\nfailing() {")
-	end := strings.Index(script[start+1:], "\n}\n")
-	if start < 0 || end < 0 {
-		t.Fatal("failing() not found in scripts/land.sh")
+	cmd := exec.Command("bash", append([]string{"-c", landFns(t, fns...) + "\n" + snippet, "bash"}, args...)...)
+	cmd.Env = append(os.Environ(), env...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s: %v\n%s", snippet, err, out)
 	}
-	fn := script[start : start+1+end+3]
+	return string(out)
+}
+
+// writeLog writes a gate log to a temporary file.
+func writeLog(t *testing.T, body string) string {
+	t.Helper()
 	logFile := filepath.Join(t.TempDir(), "gate.log")
 	if err := os.WriteFile(logFile, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Command("bash", "-c", fn+"\nfailing \"$1\"", "bash", logFile).CombinedOutput()
-	if err != nil {
-		t.Fatalf("failing: %v\n%s", err, out)
-	}
-	return strings.TrimSpace(string(out))
+	return logFile
+}
+
+// failingOf runs scripts/land.sh's failing() over a gate log.
+func failingOf(t *testing.T, body string) string {
+	t.Helper()
+	return strings.TrimSpace(landBash(t, []string{"failing"}, `failing "$1"`, nil, writeLog(t, body)))
 }
 
 // The e2e runner's report lists every failed scenario by name and first failing line, in the
@@ -289,4 +318,217 @@ exit 0
 	if gh := e.log(); !strings.Contains(gh, "--title flaky: mcpbridge.TestBridge (panic) other (panic: oops) failed once and passed on a re-run") {
 		t.Errorf("the issue title must name the panicking packages:\n%s", gh)
 	}
+}
+
+// The test a panic is named after is the one whose `--- FAIL` line directly precedes the
+// `panic:` line, else go test's `running tests:` entry, else the first `.TestX(` frame of the
+// first goroutine; a test that failed earlier is not the one that panicked. A `fatal error:`
+// (deadlock, concurrent map writes) is named like a panic. A package and a message carry no `.`
+// (`www.example.org` would be a link in the issue), and a name is at most 60 characters.
+func TestLanderFailingAttributesPanicsToTheRightTest(t *testing.T) {
+	const kb = "FAIL\tgithub.com/x/p/internal/kb\t0.1s\n"
+	for _, c := range []struct{ name, log, want string }{
+		{"an earlier failed test is not the one that panicked",
+			"--- FAIL: TestA (0.00s)\n    a_test.go:5: x\n--- FAIL: TestA2 (0.00s)\n    a_test.go:9: y\npanic: boom\n\ngoroutine 7 [running]:\ngithub.com/x/p/internal/kb.TestB(0xc0)\n\t/x/b_test.go:3 +0x1\n" + kb,
+			"kb.TestB (panic) TestA TestA2"},
+		{"no frame and no verdict line: the package",
+			"--- FAIL: TestA (0.00s)\n    a_test.go:5: x\n--- FAIL: TestA2 (0.00s)\n    a_test.go:9: y\npanic: boom\n\ngoroutine 7 [running]:\nmain.helper(0x1)\n" + kb,
+			"kb (panic: boom) TestA TestA2"},
+		{"the verdict line right before the panic, also of a subtest",
+			"--- FAIL: TestX (0.00s)\n    --- FAIL: TestX/sub (0.00s)\npanic: boom [recovered]\n\tpanic: boom\n\ngoroutine 7 [running]:\n" + kb,
+			"kb.TestX (panic)"},
+		{"the first running test of a timeout, without its subtest",
+			"panic: test timed out after 10m0s\n\trunning tests:\n\t\tTestSlow/case (9m0s)\n\t\tTestOther (1m0s)\n" + kb,
+			"kb.TestSlow (panic)"},
+		{"a timeout is the running test's even after a failed test",
+			"--- FAIL: TestA (1.00s)\npanic: test timed out after 10m0s\n\trunning tests:\n\t\tTestSlow (9m0s)\n" + kb,
+			"kb.TestSlow (panic) TestA"},
+		{"a deadlock is named like a panic",
+			"fatal error: all goroutines are asleep - deadlock!\n\ngoroutine 1 [chan receive]:\ngithub.com/x/p/internal/kb.TestDead(0xc0)\n\t/x.go:1 +0x1\n" + kb,
+			"kb.TestDead (panic)"},
+		{"a fatal error has no verdict line: a failed test before it is not its test",
+			"--- FAIL: TestA (0.00s)\nfatal error: concurrent map writes\n\ngoroutine 9 [running]:\nmain.helper(0x1)\n" + kb,
+			"kb (panic: concurrent map writes) TestA"},
+		{"only the first goroutine's frames name the test",
+			"panic: x\n\ngoroutine 1 [running]:\nmain.f()\n\ngoroutine 9 [chan receive]:\ngithub.com/x/p/internal/kb.TestOther(0xc)\n" + kb,
+			"kb (panic: x)"},
+		{"a closure of a test", "panic: x\n\ngoroutine 5 [running]:\ngithub.com/x/p/internal/kb.TestClo.func1(0xc)\n\t/x/t.go:4\n" + kb,
+			"kb.TestClo (panic)"},
+		{"a file path is not a frame", "panic: x\n\ngoroutine 5 [running]:\nmain.f()\n\t/x/internal/.TestData(/f.go:4\n" + kb,
+			"kb (panic: x)"},
+		{"no dot in a message or a package", "panic: see www.example.org now\nFAIL\twww.example.org\t0.1s\n",
+			"wwwexampleorg (panic: see wwwexampleorg now)"},
+		{"a name is cut to 60 characters",
+			"--- FAIL: Test" + strings.Repeat("L", 80) + " (0.00s)\npanic: " + strings.Repeat("m", 80) + "\nFAIL\tgithub.com/x/p/internal/" + strings.Repeat("p", 80) + "\t0.1s\n",
+			strings.Repeat("p", 25) + ".Test" + strings.Repeat("L", 21) + " (panic) Test" + strings.Repeat("L", 56)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := failingOf(t, c.log); got != c.want {
+				t.Errorf("failing() = %q, want %q", got, c.want)
+			}
+		})
+	}
+	t.Run("a message is cut so that the whole name stays within 60", func(t *testing.T) {
+		got := failingOf(t, "panic: "+strings.Repeat("m", 90)+"\nFAIL\tgithub.com/x/p/internal/"+strings.Repeat("p", 90)+"\t0.1s\n")
+		if len(got) > 60 || !strings.HasPrefix(got, strings.Repeat("p", 25)+" (panic: m") {
+			t.Errorf("failing() = %q (%d)", got, len(got))
+		}
+	})
+	t.Run("lines gives one name per line", func(t *testing.T) {
+		log := writeLog(t, "panic: oops\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\nE2E FAILED: s1: [FAIL] x\nE2E FAILED: s2: [FAIL] y\n")
+		got := landBash(t, []string{"failing"}, `failing "$1" lines`, nil, log)
+		if want := "kb (panic: oops)\\ne2e.s1\\ne2e.s2\\n"; got != strings.ReplaceAll(want, "\\n", "\n") {
+			t.Errorf("failing lines = %q", got)
+		}
+	})
+}
+
+// Ten long names measured 278 characters in a title; GitHub refuses past 256, and issue_flaky
+// only logged a warning: a systemic e2e flake filed nothing. The title is cut at a name
+// boundary to at most 200 characters ("and N more"); the body is not touched.
+func TestLanderFlakyIssueTitleIsBounded(t *testing.T) {
+	var log strings.Builder
+	var names []string
+	for i := 0; i < 10; i++ {
+		n := "2" + strconv.Itoa(i) + "_a_rather_long_scenario_name"
+		names = append(names, "e2e."+n)
+		log.WriteString("E2E FAILED: " + n + ": [FAIL] x\n")
+	}
+	if full := "flaky: " + strings.Join(names, " ") + " failed once and passed on a re-run"; len(full) <= 256 {
+		t.Fatalf("the fixture is not long enough to be refused: %d", len(full))
+	}
+	const what = "failed once and passed on a re-run"
+	lf := writeLog(t, log.String())
+	title := strings.TrimSpace(landBash(t, []string{"failing", "issue_title"},
+		`issue_title "$(failing "$1" lines)" "$2"`, nil, lf, what))
+	if len(title) > 200 {
+		t.Errorf("title of %d characters: %q", len(title), title)
+	}
+	m := regexp.MustCompile(`^flaky: ((?:e2e\.\S+ )+)and (\d+) more ` + what + `$`).FindStringSubmatch(title)
+	if m == nil {
+		t.Fatalf("a cut title is `flaky: <names> and N more <what>`: %q", title)
+	}
+	kept := strings.Fields(m[1])
+	if !reflect.DeepEqual(kept, names[:len(kept)]) {
+		t.Errorf("the names kept are the first ones, whole: %q", kept)
+	}
+	if n, _ := strconv.Atoi(m[2]); n != 10-len(kept) || n < 1 {
+		t.Errorf("%d kept, %q more", len(kept), m[2])
+	}
+
+	// Every name on its own is long: each is cut to 60, and the title still fits.
+	long := strings.Repeat("n", 100)
+	var b strings.Builder
+	for i := 0; i < 10; i++ {
+		b.WriteString(long + strconv.Itoa(i) + "\n")
+	}
+	title = strings.TrimSpace(landBash(t, []string{"issue_title"}, `issue_title "$1" "$2"`, nil, b.String(), what))
+	if len(title) > 200 || !strings.HasPrefix(title, "flaky: "+strings.Repeat("n", 60)+" ") || !strings.Contains(title, " and ") {
+		t.Errorf("title of %d characters: %q", len(title), title)
+	}
+
+	// Short names are left alone, and the title is what gh receives.
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OUT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "args")
+	landBash(t, []string{"issue_title", "issue_flaky"},
+		`repo=up/proj; log() { :; }; issue_flaky "$1" "$2" "$3"`,
+		[]string{"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "OUT=" + out},
+		"kb.TestA\nkb.TestB", what, "the body")
+	args := strings.Split(strings.TrimSpace(readFile(t, dir, "args")), "\n")
+	if want := "flaky: kb.TestA kb.TestB " + what; !reflect.DeepEqual(args, []string{"issue", "create", "-R", "up/proj", "--label", "bug", "--title", want, "--body", "the body"}) {
+		t.Errorf("gh got %q", args)
+	}
+}
+
+// The `E2E FAILED:` lines copied into the body of a public issue come from the gate log, which
+// holds the output of the change under test: a carriage return, an escape or a non-ASCII
+// character could end the code block, and an `@` is a mention.
+func TestLanderE2EReportIsInert(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("E2E FAILED: s0: [FAIL] x\r@user [x](http://example.com) ![i](http://example.com/i.png)\n")
+	b.WriteString("E2E FAILED: s1: [FAIL] \x1b[31mred\x1b[0m \u202e\u2028 \x00 end\n")
+	b.WriteString("E2E FAILED: s2: " + strings.Repeat("long ", 100) + "\n")
+	for i := 3; i < 14; i++ {
+		b.WriteString("E2E FAILED: s" + strconv.Itoa(i) + ": [FAIL] y\n")
+	}
+	got := landBash(t, []string{"e2e_report"}, `e2e_report "$1"`, nil, writeLog(t, b.String()))
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) != 10 {
+		t.Errorf("%d lines, want 10:\n%s", len(lines), got)
+	}
+	for _, l := range lines {
+		if !strings.HasPrefix(l, "    E2E FAILED: s") || len(l) > 204 {
+			t.Errorf("a line of the code block is cut and indented: %q", l)
+		}
+		for _, r := range l {
+			if r < ' ' || r > '~' || r == '@' {
+				t.Errorf("%q in %q", r, l)
+				break
+			}
+		}
+	}
+	if !strings.Contains(got, "    E2E FAILED: s0: [FAIL] xuser [x](http://example.com) ![i](http://example.com/i.png)\n") {
+		t.Errorf("the forged line is kept, inert (no CR, its @ gone):\n%s", got)
+	}
+	if out := landBash(t, []string{"e2e_report"}, `e2e_report "$1"`, nil, writeLog(t, "nothing named\n")); out != "" {
+		t.Errorf("no E2E FAILED line, no output: %q", out)
+	}
+}
+
+// The probe line is read from the gate log, which holds the change's own output: a forged one
+// must never reach `signoff.sh --probe` as arguments of go test or make.
+func TestLanderProbeIsValidated(t *testing.T) {
+	probeOf := func(t *testing.T, body string) string {
+		t.Helper()
+		return strings.TrimSpace(landBash(t, []string{"probe_of"}, `probe_of "$1"`, nil, writeLog(t, body)))
+	}
+	real := "signoff: probe: linux github.com/x/p/internal/kb,github.com/x/p/internal/audit github.com/x/p/internal/mcpserver\n"
+	for _, c := range []struct{ name, line, want string }{
+		{"linux", real, "linux github.com/x/p/internal/kb,github.com/x/p/internal/audit github.com/x/p/internal/mcpserver"},
+		{"windows, no race list", "signoff: probe: windows github.com/x/p/internal/kb -\n", "windows github.com/x/p/internal/kb -"},
+		{"only a race list", "signoff: probe: linux - github.com/x/p/internal/kb\n", "linux - github.com/x/p/internal/kb"},
+		{"CRLF", "signoff: probe: linux a/b -\r\n", "linux a/b -"},
+		{"nothing to run", "signoff: probe: linux - -\n", ""},
+		{"an option as a package", "signoff: probe: linux -run=X -\n", ""},
+		{"an option after a comma", "signoff: probe: linux a/b,-bench=. -\n", ""},
+		{"an option in the race list", "signoff: probe: linux a/b -exec=sh\n", ""},
+		{"an extra word", "signoff: probe: linux a/b - -x\n", ""},
+		{"a missing word", "signoff: probe: linux a/b\n", ""},
+		{"an unknown platform", "signoff: probe: darwin a/b -\n", ""},
+		{"a command substitution", "signoff: probe: linux $(id) -\n", ""},
+		{"a glob", "signoff: probe: linux a/*,b -\n", ""},
+		{"a semicolon", "signoff: probe: linux a;b -\n", ""},
+		{"an empty package between commas", "signoff: probe: linux a,,b -\n", ""},
+		{"nothing", "signoff: make failed\n", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := probeOf(t, "FAIL\tgithub.com/x/p/internal/kb\t0.1s\n"+c.line+"signoff: make gate failed (exit 2): nothing pushed, nothing posted\n"); got != c.want {
+				t.Errorf("probe_of = %q, want %q", got, c.want)
+			}
+		})
+	}
+	t.Run("the last line wins: the signoff prints its own after the retry", func(t *testing.T) {
+		got := probeOf(t, "signoff: probe: linux evil/pkg -\n--- FAIL: TestA\nsignoff: probe: windows a/b -x\n"+real)
+		if want := "linux github.com/x/p/internal/kb,github.com/x/p/internal/audit github.com/x/p/internal/mcpserver"; got != want {
+			t.Errorf("probe_of = %q, want %q", got, want)
+		}
+	})
+	t.Run("a forged line after the real one is no probe at all", func(t *testing.T) {
+		if got := probeOf(t, real+"signoff: probe: linux $(id) -\n"); got != "" {
+			t.Errorf("probe_of = %q, want none (full gates)", got)
+		}
+	})
+	t.Run("land.sh reads the log of the last gate only, through probe_of", func(t *testing.T) {
+		script := readFile(t, repoRoot(t), "scripts/land.sh")
+		if !strings.Contains(script, `if [ -e "$glog.2" ]; then probe=$(probe_of "$glog.2"); else probe=$(probe_of "$glog"); fi`) {
+			t.Error("the bisection must take its probe from probe_of over the last gate's log")
+		}
+		if strings.Contains(script, "sed -n 's/^signoff: probe: //p'") && !strings.Contains(script, "probe_of() {") {
+			t.Error("an unchecked probe line reaches signoff.sh --probe")
+		}
+	})
 }

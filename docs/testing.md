@@ -1089,10 +1089,16 @@ issue naming them. A red train whose failure the signoff's targeted retry confir
 straight to bisection; any other red train is gated a second time on the same tree: green
 then is a flaky test, the train lands and a `bug` issue names the failing tests (Go, vitest
 and Playwright names read from the log, the e2e scenarios as `e2e.<scenario>` with their first
-failing lines in the body, a Go panic as `pkg.Test (panic)` or `pkg (panic: <message>)`); red again, the lander
+failing lines in the body, a Go panic or `fatal error:` as `pkg.Test (panic)` or `pkg (panic: <message>)`: the test is
+the `--- FAIL` line right before the `panic:`, else go test's `running tests:` entry, else the first `.TestX(` frame of the
+first goroutine; each name is cut to 60 characters, and the title to 200 at a name boundary, `and N more`, since GitHub
+refuses one past 256; what the log copies into the body is printable ASCII without `@`, a panic's package and message without
+`.`, so nothing in a public issue is a mention or a link); red again, the lander
 bisects over the train's prefixes (one signoff each) and rejects the first change whose
 prefix is red. When the signoff confirmed the failure on named Go tests, its `signoff: probe:`
-line names their packages and platform, and each bisection step runs only those
+line names their packages and platform (the last such line of the last gate's log, and only
+if it is `linux` or `windows` and two comma-separated lists of `[A-Za-z0-9_./-]` words, none starting with `-`, or `-`: the
+log holds the change's own output, so a line of another shape is no probe and the bisection runs full gates), and each bisection step runs only those
 (`scripts/signoff.sh --probe`, a minute or two instead of a full signoff, D1878);
 the prefix before the rejected change then gets one full signoff before it lands (red: the
 train is composed again), and a probe whose machine is unavailable, or whose wrapper failed with an exit that is not the platform's
