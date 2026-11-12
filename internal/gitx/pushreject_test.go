@@ -238,6 +238,10 @@ func TestIsRemoteUnreachable(t *testing.T) {
 		"no route":    "ssh: connect to host example.com port 22: No route to host",
 		"unreach":     "ssh: connect to host example.com port 22: Network is unreachable",
 		"ssh timeout": "ssh: connect to host example.com port 22: Connection timed out",
+		"net down":    "ssh: connect to host example.com port 22: Network is down",
+		"reset":       "client_loop: send disconnect: Connection reset by peer",
+		"closed":      "Connection closed by remote host",
+		"kex":         "kex_exchange_identification: read: Connection reset by peer",
 	} {
 		if err := errors.New(out); !IsRemoteUnreachable(err) {
 			t.Errorf("%s: IsRemoteUnreachable = false for %q", name, out)
@@ -259,5 +263,69 @@ func TestIsRemoteUnreachable(t *testing.T) {
 	}
 	if IsRemoteUnreachable(nil) {
 		t.Error("nil is not unreachable")
+	}
+}
+
+// A verdict on the credential is an allow-list: the remote's permanent
+// rejections and a login it refused or never got. A TLS or host-key failure, a
+// throttle or a server fault says nothing about the credential.
+func TestIsPushCredentialVerdict(t *testing.T) {
+	t.Parallel()
+	for name, out := range map[string]string{
+		"permission":   "remote: Permission to org/kb.git denied to user.\nfatal: unable to access: The requested URL returned error: 403",
+		"write access": "remote: You do not have write access",
+		"deploy key":   "ERROR: the key is a read-only deploy key",
+		"auth failed":  "fatal: Authentication failed for 'https://example.com/kb.git/'",
+		"401":          "The requested URL returned error: 401",
+		"no login":     "fatal: could not read Username for 'https://example.com': terminal prompts disabled",
+		"ssh key":      "git@example.com: Permission denied (publickey).",
+	} {
+		if !IsPushCredentialVerdict(errors.New(out)) {
+			t.Errorf("%s: not a verdict for %q", name, out)
+		}
+	}
+	for name, out := range map[string]string{
+		"bare 403": "The requested URL returned error: 403",
+		"429":      "The requested URL returned error: 429",
+		"503":      "The requested URL returned error: 503",
+		"tls":      "SSL certificate problem: unable to get local issuer certificate",
+		"host key": "Host key verification failed.",
+		"reset":    "Connection reset by peer",
+		"empty":    "",
+	} {
+		if IsPushCredentialVerdict(errors.New(out)) {
+			t.Errorf("%s: a verdict for %q", name, out)
+		}
+	}
+	if IsPushCredentialVerdict(nil) || IsPushCredentialVerdict(fmt.Errorf("%w for x: context deadline exceeded", ErrProbeTimeout)) {
+		t.Error("nil and a deadline are not verdicts")
+	}
+}
+
+// RemotePushURL follows remote.<name>.pushurl, which the server's push honours.
+func TestRemotePushURL(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not in PATH")
+	}
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"remote", "add", "origin", "https://read.example.com/kb.git"},
+	} {
+		if out, err := runGit(dir, args...); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	if got, err := RemotePushURL(dir, "origin"); err != nil || got != "https://read.example.com/kb.git" {
+		t.Fatalf("RemotePushURL = %q, %v, want the URL", got, err)
+	}
+	if out, err := runGit(dir, "config", "remote.origin.pushurl", "https://write.example.com/kb.git"); err != nil {
+		t.Fatalf("%v %s", err, out)
+	}
+	if got, err := RemotePushURL(dir, "origin"); err != nil || got != "https://write.example.com/kb.git" {
+		t.Fatalf("RemotePushURL = %q, %v, want the pushurl", got, err)
+	}
+	if _, err := RemotePushURL(dir, "absent"); err == nil {
+		t.Error("an absent remote is an error")
 	}
 }

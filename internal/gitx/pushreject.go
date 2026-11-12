@@ -105,6 +105,10 @@ var unreachablePhrases = []string{
 	"name or service not known", "network is unreachable", "no route to host",
 	"connection timed out", "operation timed out", "connection refused",
 	"failed to connect to", "couldn't connect to server", "could not connect to server",
+	// A connection that dies before any verdict: a reset, an ssh banner exchange
+	// cut short, a dropped link.
+	"network is down", "connection reset", "connection closed by remote host",
+	"kex_exchange_identification",
 }
 
 // IsRemoteUnreachable reports whether err, from ProbePushAccess, says the
@@ -121,6 +125,43 @@ func IsRemoteUnreachable(err error) bool {
 	}
 	lower := strings.ToLower(err.Error())
 	for _, p := range unreachablePhrases {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// credentialVerdictPhrases are the lines (besides PermanentPushRejection's) with
+// which a remote that ANSWERED says the credential is not accepted for a push:
+// a login it refused, no login at all (git could not ask for one), a key it
+// rejected. A bare HTTP 403 is not among them: PermanentPushRejection leaves it
+// out because a rate limit is one too.
+var credentialVerdictPhrases = []string{
+	"authentication failed", "invalid username or password", "returned error: 401",
+	"could not read username", "could not read password", "terminal prompts disabled",
+	"permission denied (publickey",
+}
+
+// IsPushCredentialVerdict reports whether err, from ProbePushAccess, is the
+// remote's verdict on the credential: a permanent rejection
+// (PermanentPushRejection: no write access, a read-only deploy key, a rule), or
+// a login refused or missing. Anything else that is not IsRemoteUnreachable (a
+// TLS or host-key failure, an HTTP 429 or 5xx, a connection cut mid-way) says
+// nothing about the credential: the caller reports that the check could not be
+// made, never that the push is refused. No credential at all ("could not read
+// Username", terminal prompts disabled) counts as a verdict: the server would
+// not push either.
+func IsPushCredentialVerdict(err error) bool {
+	if err == nil || errors.Is(err, ErrProbeTimeout) {
+		return false
+	}
+	text := err.Error()
+	if _, ok := PermanentPushRejection(text); ok {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, p := range credentialVerdictPhrases {
 		if strings.Contains(lower, p) {
 			return true
 		}

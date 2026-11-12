@@ -8,11 +8,15 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/BeppeTemp/cartographer/internal/clientconfig"
 	"github.com/BeppeTemp/cartographer/internal/gitx"
@@ -296,5 +300,171 @@ func TestRunDoctor_ReportsAKBThatCannotPush(t *testing.T) {
 	found := findingsFor(runDoctor(dir, ""), "push-access")
 	if len(found) != 1 || found[0].Severity != doctorWarning || !strings.Contains(found[0].Message, `"alpha"`) {
 		t.Fatalf("push-access findings = %+v, want one warning for alpha", found)
+	}
+}
+
+// Three verdicts, by an allow-list: the remote's own word on the credential is a
+// refusal, a network failure is offline, and anything else (a TLS or host-key
+// failure, a throttle, a server fault, a bare 403) is "could not check" and must
+// never read as "the credential cannot push".
+func TestClassifyPushError(t *testing.T) {
+	const head = "git push --dry-run https://example.com/kb.git: "
+	for _, tc := range []struct {
+		name, out string
+		want      pushVerdict
+	}{
+		{"read-only token", head + "this credential cannot push to the remote: use a token or key with write access\nremote: Permission to org/kb.git denied to user.\nfatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403", pushRefused},
+		{"write access", "remote: You do not have write access to this repository", pushRefused},
+		{"read-only deploy key", "ERROR: The key you are authenticating with is a read-only deploy key.", pushRefused},
+		{"authentication failed", head + "the credentials were rejected: check the token\nfatal: Authentication failed for 'https://example.com/kb.git/'", pushRefused},
+		{"401", "fatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 401", pushRefused},
+		{"no credential", "fatal: could not read Username for 'https://example.com': terminal prompts disabled", pushRefused},
+		{"rejected ssh key", head + "the forge rejected this machine's SSH key\ngit@example.com: Permission denied (publickey).", pushRefused},
+		{"rule", "remote: error: GH013: Repository rule violations found", pushRefused},
+
+		{"dns", "fatal: unable to access 'https://example.com/kb.git/': Could not resolve host: example.com", pushOffline},
+		{"refused", "Failed to connect to 127.0.0.1 port 1 after 0 ms: Connection refused", pushOffline},
+		{"network down", "ssh: connect to host example.com port 22: Network is down", pushOffline},
+		{"reset", "read: Connection reset by peer", pushOffline},
+		{"ssh banner", "kex_exchange_identification: Connection closed by remote host", pushOffline},
+		{"closed", "Connection closed by remote host\nfatal: Could not read from remote repository.", pushOffline},
+		{"deadline", fmt.Sprintf("%v for https://example.com/kb.git: context deadline exceeded", gitx.ErrProbeTimeout), pushOffline},
+
+		{"untrusted tls", head + "the remote's TLS certificate is not trusted by this machine\nfatal: unable to access: SSL certificate problem: self-signed certificate", pushUnknown},
+		{"host key", head + "the forge's host key is not in known_hosts\nHost key verification failed.", pushUnknown},
+		{"429", "fatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 429", pushUnknown},
+		{"503", "fatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 503", pushUnknown},
+		{"502 rpc", "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502", pushUnknown},
+		{"bare 403", "fatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403", pushUnknown},
+		{"not found", "remote: Repository not found.\nfatal: repository 'https://example.com/kb.git/' not found", pushUnknown},
+		{"unrecognised", head + "exit status 128: fatal: something git has never said", pushUnknown},
+	} {
+		var err error = errors.New(tc.out)
+		if tc.name == "deadline" {
+			err = fmt.Errorf("%w for https://example.com/kb.git: context deadline exceeded", gitx.ErrProbeTimeout)
+		}
+		if got := classifyPushError(err); got != tc.want {
+			t.Errorf("%s: verdict %d, want %d for %q", tc.name, got, tc.want, tc.out)
+		}
+	}
+}
+
+// The server pushes through origin, which honours remote.origin.pushurl: that is
+// the URL to probe, not the fetch URL.
+func TestProbeKBPush_ProbesThePushURL(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not in PATH")
+	}
+	isolateGit(t)
+	kb := filepath.Join(t.TempDir(), "kb")
+	mustRunGit(t, "", "init", "-b", "main", kb)
+	mustRunGit(t, kb, "remote", "add", "origin", "https://read.example.com/kb.git")
+	var asked string
+	orig := probePushAccessFn
+	probePushAccessFn = func(_ context.Context, remote string, _ ...string) error { asked = remote; return nil }
+	t.Cleanup(func() { probePushAccessFn = orig })
+
+	if r := probeKBPush(context.Background(), "kb", kb, ""); r.Verdict != pushWritable || asked != "https://read.example.com/kb.git" {
+		t.Fatalf("without a pushurl: %+v asked %q, want the fetch URL", r, asked)
+	}
+	mustRunGit(t, kb, "config", "remote.origin.pushurl", "https://write.example.com/kb.git")
+	if r := probeKBPush(context.Background(), "kb", kb, ""); r.Verdict != pushWritable || asked != "https://write.example.com/kb.git" {
+		t.Fatalf("with a pushurl: %+v asked %q, want the push URL", r, asked)
+	}
+}
+
+// A probe failure that is neither a refusal nor silence is "could not check":
+// an info finding that leaves the exit code alone, and a note from `kb clone`.
+func TestProbeKBPush_UnknownIsNotARefusal(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not in PATH")
+	}
+	isolateGit(t)
+	kb := filepath.Join(t.TempDir(), "kb")
+	mustRunGit(t, "", "init", "-b", "main", kb)
+	mustRunGit(t, kb, "remote", "add", "origin", "https://example.com/kb.git")
+	orig := probePushAccessFn
+	probePushAccessFn = func(context.Context, string, ...string) error {
+		return errors.New("git push --dry-run https://example.com/kb.git: the remote's TLS certificate is not trusted by this machine\nSSL certificate problem")
+	}
+	t.Cleanup(func() { probePushAccessFn = orig })
+
+	r := probeKBPush(context.Background(), "kb", kb, "")
+	if r.Verdict != pushUnknown || r.Cause != "the remote's TLS certificate is not trusted by this machine" {
+		t.Fatalf("result = %+v, want unknown with the cause and no URL", r)
+	}
+	got := pushFindings([]string{"kb"}, "/data", []pushResult{r})
+	if len(got) != 1 || got[0].Severity != doctorInfo || !strings.Contains(got[0].Message, "could not be checked") {
+		t.Fatalf("findings = %+v, want one info", got)
+	}
+	if doctorExitCode(doctorReport{Findings: got, Infos: 1}) != 0 {
+		t.Error("a probe that could not check must not fail the run")
+	}
+	errOut := withStderr(t, func() { warnIfCannotPush("kb", kb, "", t.TempDir()) })
+	if !strings.Contains(errOut, "Note:") || !strings.Contains(errOut, "could not be checked") || !strings.Contains(errOut, "TLS certificate") || strings.Contains(errOut, "Warning") {
+		t.Errorf("stderr = %q, want a note with the cause and no warning", errOut)
+	}
+}
+
+// 20 KBs behind one forge that is down are one line, not twenty; a different
+// cause is its own line; a refusal stays one warning per KB.
+func TestPushFindings_AggregatesByCause(t *testing.T) {
+	down := pushResult{Verdict: pushOffline, Cause: "could not resolve host"}
+	other := pushResult{Verdict: pushOffline, Cause: "connection refused"}
+	unknown := pushResult{Verdict: pushUnknown, Cause: "could not resolve host"}
+	refused := pushResult{Verdict: pushRefused, Cause: "no write access"}
+	names := []string{"a", "b", "c", "d", "e", "f", "g"}
+	got := pushFindings(names, "/data", []pushResult{down, refused, down, other, {Verdict: pushWritable}, unknown, {Verdict: pushNoRemote}})
+	if len(got) != 4 {
+		t.Fatalf("findings = %+v, want a warning, and one info per distinct verdict and cause", got)
+	}
+	if got[0].Severity != doctorWarning || !strings.Contains(got[0].Message, `"b"`) {
+		t.Errorf("first = %+v, want the warning for b", got[0])
+	}
+	if got[1].Severity != doctorInfo || !strings.Contains(got[1].Message, `KBs "a", "c"`) || got[1].Path != "/data" {
+		t.Errorf("down = %+v, want one finding naming a and c", got[1])
+	}
+	if !strings.Contains(got[2].Message, `KB "d"`) || !strings.Contains(got[3].Message, `KB "f"`) || !strings.Contains(got[3].Message, "could not be checked") {
+		t.Errorf("rest = %+v / %+v", got[2], got[3])
+	}
+}
+
+// doctor opens at most pushProbeParallel connections at once.
+func TestCheckPushAccess_CapsConcurrency(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not in PATH")
+	}
+	isolateGit(t)
+	dataDir := t.TempDir()
+	var names []string
+	for i := 0; i < 3*pushProbeParallel; i++ {
+		name := fmt.Sprintf("kb-%d", i)
+		names = append(names, name)
+		mustRunGit(t, "", "init", "-b", "main", filepath.Join(dataDir, name))
+		mustRunGit(t, filepath.Join(dataDir, name), "remote", "add", "origin", "https://example.com/"+name+".git")
+	}
+	var inFlight, peak atomic.Int32
+	origProbe, origDirs := probePushAccessFn, doctorServerDirsFn
+	probePushAccessFn = func(context.Context, string, ...string) error {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			p := peak.Load()
+			if n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+		return nil
+	}
+	doctorServerDirsFn = func() (string, string) { return dataDir, t.TempDir() }
+	t.Cleanup(func() { probePushAccessFn, doctorServerDirsFn = origProbe, origDirs })
+
+	cfg := &clientconfig.Config{ServerURL: "http://127.0.0.1:39273/mcp"}
+	if got := checkPushAccess(cfg, serverFacts{Names: names}, nil); len(got) != 0 {
+		t.Fatalf("findings = %+v, want none", got)
+	}
+	if p := peak.Load(); p < 2 || p > pushProbeParallel {
+		t.Errorf("peak concurrent probes = %d, want between 2 and %d", p, pushProbeParallel)
 	}
 }
