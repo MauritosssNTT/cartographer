@@ -15,9 +15,6 @@ is one undirected edge whose weight counts the underlying directed links. A
 cluster unfolds into its members by PageRank; one response holds at most 400
 clusters and nodes and 1,500 edges. The verbs are unfold and fold, never expand
 (`GraphNode.Expanded` already means a folder concept).
-The Atlas API serves it as a separate preview route,
-`GET /kbs/{kb}/graph/clusters` with `scope`, `unfold` (at most 50 cluster ids)
-and `focus`, so the flat `/graph` contract stays as it is.
 
 **Why.** A 10k-50k concept KB was drawn as its top 2,000 nodes, the rest simply
 absent. Clusters and counts are computed from the visible graph the snapshot
@@ -30,11 +27,6 @@ top of that community, and then the id changes and an unfold of it is reported
 as dropped.
 
 **Alternatives rejected.**
-- Extending `/graph` with a mode: the body is a different shape, and the flat
-  route's contract would move with it.
-- Memoizing the aggregated cluster edges too: their weights depend on the scope
-  and the unfold set, and at 50,000 concepts and 250,000 links the aggregation
-  costs a small fraction of building the visible graph the request needs anyway.
 - Cluster id from the Louvain rank: changes with every new concept.
 - Label from the community anchor (D244): chosen to name a legend, it can differ
   from the most important member.
