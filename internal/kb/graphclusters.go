@@ -12,9 +12,7 @@ import (
 // Bounds of the cluster view. A response holds at most MaxClusterElements
 // clusters and nodes together and MaxClusterEdges edges, whatever the KB size.
 const (
-	// ClusterThreshold is the number of visible concepts in scope above which
-	// the Atlas shows communities instead of concepts: where the flat view
-	// starts truncating.
+	// ClusterThreshold is where the flat view starts truncating.
 	ClusterThreshold = DefaultGraphNodeLimit
 	// MaxClusters is how many communities become clusters; the rest share one
 	// synthetic tail cluster.
@@ -34,11 +32,10 @@ const (
 // GraphCluster is one folded community of the caller's visible graph. Every
 // number is computed over visible concepts only (D226, D244).
 type GraphCluster struct {
-	// ID is "c:" plus the id of the member with the highest PageRank in the
-	// whole community, scope-independent. A "c:" id is never a concept id.
+	// ID is "c:" plus the top-PageRank member of the whole community (never a concept id).
 	ID    string `json:"id"`
 	Label string `json:"label"`
-	// Collection is the dominant top-level collection among the in-scope members.
+	// Collection is the dominant one among the in-scope members.
 	Collection string `json:"collection,omitempty"`
 	// Size counts the in-scope members.
 	Size int `json:"size"`
@@ -46,7 +43,7 @@ type GraphCluster struct {
 	Slot int `json:"slot"`
 	// InternalEdges counts the links between two members, not drawn.
 	InternalEdges int `json:"internal_edges"`
-	// Communities is set on the tail cluster: how many communities it holds.
+	// Communities counts the communities of the tail cluster.
 	Communities int `json:"communities,omitempty"`
 }
 
