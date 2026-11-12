@@ -290,6 +290,10 @@ func (d Deps) clientSnapshot(cm *clientMemo) (Snapshot, bool) {
 	}
 	var remote *client.RemoteError
 	switch {
+	case errors.Is(err, ErrForeignListener):
+		// A program answers on the address: not a refused server_url. The host
+		// is the one the snapshot shows (no userinfo, path or query).
+		d.logProbeOnce(cm, fmt.Sprintf("tray: another program answers on %s", ClassifyClient(nil, err, t).Foreign))
 	case err != nil && !errors.As(err, &remote):
 		// A server_url the client's rules refuse (remote plain http://, a bad
 		// scheme, an unparsable URL). err is never logged: CheckServerURL

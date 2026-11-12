@@ -123,3 +123,28 @@ func TestProbeClientForeignListener(t *testing.T) {
 		t.Errorf("unreachable = %+v / %q", down, StatusLine(down))
 	}
 }
+
+// A foreign listener in client mode is logged as such, once per change, never
+// as a refused server_url.
+func TestClientSnapshotLogsForeignListenerOnce(t *testing.T) {
+	f := &clientEnv{target: ClientTarget{Present: true, ServerURL: "http://127.0.0.1:39273/mcp"}, probeErr: ErrForeignListener}
+	d := f.deps()
+	cm := &clientMemo{}
+	for i := 0; i < 3; i++ {
+		s, ok := d.clientSnapshot(cm)
+		if !ok || s.Foreign != "127.0.0.1:39273" {
+			t.Fatalf("snapshot = %+v, %v", s, ok)
+		}
+	}
+	want := "tray: another program answers on 127.0.0.1:39273"
+	if len(f.logs) != 1 || f.logs[0] != want {
+		t.Fatalf("logs = %q, want exactly [%q]", f.logs, want)
+	}
+	f.probeErr = nil
+	d.clientSnapshot(cm)
+	f.probeErr = ErrForeignListener
+	d.clientSnapshot(cm)
+	if len(f.logs) != 2 {
+		t.Errorf("logs after a passing probe = %q, want the line again", f.logs)
+	}
+}
