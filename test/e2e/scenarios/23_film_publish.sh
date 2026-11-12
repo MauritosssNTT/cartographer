@@ -23,6 +23,10 @@
 #      names are data it chose, D1068): a file not in the list, a name holding a
 #      newline that would add a tree entry, a symlink, are exit 1 and push
 #      nothing; films.txt without a final newline or with CRLF still reads.
+#   9. A file over its film's cap (film/max-bytes.txt, the file record.mjs reads
+#      too; FILM_MAX_BYTES overrides it) is exit 1 naming the file, its size and
+#      the cap, before any file is hashed and with nothing pushed; a file exactly
+#      at the cap is published; a bad override or cap file is exit 1.
 #
 # Expected environment variables: E2E_TMP_DIR, REPO_ROOT.
 
@@ -69,7 +73,7 @@ git config user.email e2e@example.com
 
 # The scripts under test, and the paths film/inputs.sh lists.
 mkdir -p film/src web/src/lib/graph3d docs/brand web/src/styles
-cp "${REPO_ROOT}/film/publish.sh" "${REPO_ROOT}/film/film-needed.sh" "${REPO_ROOT}/film/inputs.sh" film/
+cp "${REPO_ROOT}/film/publish.sh" "${REPO_ROOT}/film/film-needed.sh" "${REPO_ROOT}/film/inputs.sh" "${REPO_ROOT}/film/max-bytes.txt" film/
 printf 'launch\nplugins\ndeployment\n' > film/films.txt
 echo main > film/src/main.ts
 echo scene > web/src/lib/graph3d/scene.ts
@@ -211,7 +215,80 @@ check "films.txt with CRLF and no final newline still names the films" 0 "${PUBL
 git checkout -q film/films.txt
 
 echo ""
-echo "--- Phase 8: an input missing, a bad revision ---"
+echo "--- Phase 8: a file over its film's cap is refused ---"
+# Small caps in the scratch copy of the shared file keep the fixtures tiny: launch 5000, plugins 4000, any other film 3000.
+printf '# caps\ndefault 3000\nlaunch 5000\nplugins 4000\n' > film/max-bytes.txt
+BEFORE="$(git --git-dir="$ORIGIN" rev-parse readme-film)"
+# fixture <file> <bytes>: random content, so no earlier publish wrote its blob
+fixture() { head -c "$2" /dev/urandom > "$1"; }
+# unwritten <file>: its blob is not in the object database, so the refused publish hashed nothing
+unwritten() {
+    if git cat-file -e "$(git hash-object "$1")" 2>/dev/null; then
+        _assert_fail "$1 was hashed into the repository before the refusal"
+    else
+        _assert_pass "$1 was not hashed before the refusal"
+    fi
+}
+mkdir -p caps
+fixture caps/film.webp 5001
+check "a launch film one byte over its cap is refused" 1 film/publish.sh caps/film.webp
+assert_file_contains "${DIR}/out.txt" "caps/film.webp"
+assert_file_contains "${DIR}/out.txt" "5001 bytes"
+assert_file_contains "${DIR}/out.txt" "cap of 5000 bytes"
+unchanged "an oversized launch film"
+fixture caps/film.webp 5000
+fixture caps/plugins.webp 4001
+check "a film with a line of its own is refused over it" 1 film/publish.sh caps/film.webp caps/plugins.webp
+assert_file_contains "${DIR}/out.txt" "caps/plugins.webp"
+assert_file_contains "${DIR}/out.txt" "cap of 4000 bytes"
+unchanged "an oversized plugins film"
+unwritten caps/film.webp
+fixture caps/plugins.webp 4000
+fixture caps/deployment.webp 3001
+check "a film with no line takes the default cap" 1 film/publish.sh caps/film.webp caps/plugins.webp caps/deployment.webp
+assert_file_contains "${DIR}/out.txt" "caps/deployment.webp"
+assert_file_contains "${DIR}/out.txt" "cap of 3000 bytes"
+unchanged "an oversized film at the default cap"
+unwritten caps/film.webp
+unwritten caps/plugins.webp
+mkdir -p film/out
+cp caps/film.webp film/out/film.webp
+fixture film/out/deployment.webp 3001
+check "no argument refuses an oversized film too" 1 film/publish.sh
+assert_file_contains "${DIR}/out.txt" "film/out/deployment.webp"
+unchanged "an oversized film/out file"
+rm -r film/out
+fixture caps/deployment.webp 3000
+check "files exactly at their caps are published" 0 film/publish.sh caps/film.webp caps/plugins.webp caps/deployment.webp
+if [[ "$(git --git-dir="$ORIGIN" rev-parse readme-film:deployment.webp)" == "$(git hash-object caps/deployment.webp)" ]]; then
+    _assert_pass "the file at the cap is in the tree"
+else
+    _assert_fail "the file at the cap is not in the tree"
+fi
+BEFORE="$(git --git-dir="$ORIGIN" rev-parse readme-film)"
+fixture caps/film.webp 5001
+check "FILM_MAX_BYTES lowers every cap" 1 env FILM_MAX_BYTES=100 film/publish.sh caps/plugins.webp
+assert_file_contains "${DIR}/out.txt" "cap of 100 bytes"
+unchanged "a file over FILM_MAX_BYTES"
+check "FILM_MAX_BYTES raises every cap" 0 env FILM_MAX_BYTES=6000 film/publish.sh caps/film.webp caps/plugins.webp
+BEFORE="$(git --git-dir="$ORIGIN" rev-parse readme-film)"
+for bad in abc 0 -5 1.5; do
+    check "FILM_MAX_BYTES=${bad} is refused" 1 env FILM_MAX_BYTES="$bad" film/publish.sh caps/plugins.webp
+    assert_file_contains "${DIR}/out.txt" "FILM_MAX_BYTES must be a positive number of bytes"
+done
+unchanged "a bad FILM_MAX_BYTES"
+printf 'launch 5000\n' > film/max-bytes.txt
+check "a cap file with no default is refused" 1 film/publish.sh caps/plugins.webp
+assert_file_contains "${DIR}/out.txt" "no \"default\" line"
+printf 'default 3000\nlaunch lots\n' > film/max-bytes.txt
+check "a cap that is not a number is refused" 1 film/publish.sh caps/plugins.webp
+assert_file_contains "${DIR}/out.txt" "launch lots"
+unchanged "a bad cap file"
+git checkout -q film/max-bytes.txt
+rm -r caps
+
+echo ""
+echo "--- Phase 9: an input missing, a bad revision ---"
 git rm -q web/src/lib/palette.ts && git commit -qm "rename palette"
 check "a missing input is exit 2" 2 "${NEEDED[@]}"
 assert_file_contains "${DIR}/out.txt" "web/src/lib/palette.ts"

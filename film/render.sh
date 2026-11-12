@@ -5,7 +5,7 @@
 #
 # Usage, from anywhere: film/render.sh [--films a,b] [record.mjs options, e.g. --no-mp4 --frames 30]
 # --films picks films of film/films.txt (the one list of films); the default is all of them. The other options go
-# to record.mjs as they are. FILM_MAX_BYTES caps the WebP of each film (record.mjs).
+# to record.mjs as they are. The WebP of each film is capped (film/max-bytes.txt, FILM_MAX_BYTES overrides it; record.mjs).
 # Needs `cd web && npm ci` and Chromium (npx playwright install chromium), plus ffmpeg and img2webp (webp package).
 # bash 3.2 compatible: it runs on macOS too.
 set -euo pipefail

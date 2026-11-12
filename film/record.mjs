@@ -3,7 +3,7 @@
 // what turns a broken import or camera in web/src/lib/graph3d into a red CI job.
 // --film <name> renders one film of film/films.txt (default launch); film/render.sh loops over the set. The launch film
 // writes film/out/film.webp (the name the README embeds), another film film/out/<name>.webp; frames go to film/out/frames-<name>.
-// FILM_MAX_BYTES caps the WebP of each film (default 8 MiB, 24 MiB for launch): above it the render exits 1 naming the file.
+// The WebP of each film is capped (film/max-bytes.txt, which film/publish.sh enforces again; FILM_MAX_BYTES overrides it): above it the render exits 1 naming the file.
 // --no-mp4 skips the MP4 (CI publishes only the WebP).
 // --frames N renders only frames 0..N-1 and skips the "the film has <frames>" count check; the encode is unchanged
 // (film-check.yml runs it on every pull request that touches film/, to try the tools of the runner).
@@ -33,14 +33,28 @@ const url = opt("url", `http://localhost:5180/${film === "launch" ? "" : `${film
 const base = film === "launch" ? "film" : film;
 const out = path.join(here, "out");
 const framesDir = path.join(out, `frames-${film}`);
-const LAUNCH_MAX_BYTES = 24 * 1024 * 1024; // the launch film is about 20 MB: its cap is today's size plus room, the others start smaller
-const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+// The cap of each film is film/max-bytes.txt (`<film> <bytes>`, `default` for a film with no line), which film/publish.sh reads too.
+const caps = new Map();
+for (const line of fs.readFileSync(path.join(here, "max-bytes.txt"), "utf8").split("\n")) {
+  const text = line.trim();
+  if (!text || text.startsWith("#")) continue;
+  const [key, bytes, ...extra] = text.split(/\s+/);
+  if (extra.length || !/^[1-9][0-9]*$/.test(bytes ?? "")) {
+    console.error(`record: film/max-bytes.txt: "${text}" is not "<film> <positive number of bytes>"`);
+    process.exit(1);
+  }
+  caps.set(key, Number(bytes));
+}
+if (!caps.has("default")) {
+  console.error('record: film/max-bytes.txt has no "default" line');
+  process.exit(1);
+}
 const maxEnv = process.env.FILM_MAX_BYTES;
 if (maxEnv !== undefined && maxEnv !== "" && !/^[1-9][0-9]*$/.test(maxEnv)) {
   console.error(`record: FILM_MAX_BYTES must be a positive number of bytes, got "${maxEnv}"`);
   process.exit(1);
 }
-const maxBytes = maxEnv ? Number(maxEnv) : film === "launch" ? LAUNCH_MAX_BYTES : DEFAULT_MAX_BYTES;
+const maxBytes = maxEnv ? Number(maxEnv) : (caps.get(film) ?? caps.get("default"));
 // A full render starts from an empty frames dir: stale frames from a longer run would end up in the video and the WebP.
 if (!stills.size) fs.rmSync(framesDir, { recursive: true, force: true });
 fs.mkdirSync(framesDir, { recursive: true });

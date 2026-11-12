@@ -131,6 +131,46 @@ func TestFilmPagesAreTheFilmList(t *testing.T) {
 	}
 }
 
+// The size cap of each film is film/max-bytes.txt, read by record.mjs (the render job) and publish.sh (the publish job,
+// which holds the write token and must not trust the render job's check): one source, so the two cannot disagree.
+// A line naming a film nobody lists is a cap that never applies; a missing default leaves a new film uncapped.
+func TestFilmCapsAreOneFile(t *testing.T) {
+	root := repoRoot(t)
+	listed := map[string]bool{}
+	for _, name := range strings.Fields(readFile(t, root, "film/films.txt")) {
+		listed[name] = true
+	}
+	hasDefault := false
+	for _, line := range strings.Split(readFile(t, root, "film/max-bytes.txt"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		f := strings.Fields(line)
+		if len(f) != 2 || !regexp.MustCompile(`^[1-9][0-9]*$`).MatchString(f[1]) {
+			t.Errorf("film/max-bytes.txt: %q is not \"<film> <positive number of bytes>\"", line)
+			continue
+		}
+		if f[0] == "default" {
+			hasDefault = true
+		} else if !listed[f[0]] {
+			t.Errorf("film/max-bytes.txt caps %s, which film/films.txt does not list", f[0])
+		}
+	}
+	if !hasDefault {
+		t.Error(`film/max-bytes.txt has no "default" line: a film with no line of its own would have no cap`)
+	}
+	for _, f := range []string{"film/record.mjs", "film/publish.sh"} {
+		src := readFile(t, root, f)
+		if !strings.Contains(src, "max-bytes.txt") {
+			t.Errorf("%s does not read film/max-bytes.txt: the render and the publish would not share one cap", f)
+		}
+		if regexp.MustCompile(`1024 \* 1024|\b(8388608|25165824)\b`).MatchString(src) {
+			t.Errorf("%s repeats a cap that film/max-bytes.txt holds", f)
+		}
+	}
+}
+
 func isFilmCode(p string) bool {
 	switch filepath.Ext(p) {
 	case ".ts", ".tsx", ".js", ".mjs":

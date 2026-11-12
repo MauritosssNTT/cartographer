@@ -10,7 +10,9 @@
 # Only the files film/films.txt allows go on the branch: film.webp for the launch film, <name>.webp for each other
 # film. With no argument it takes, for each listed film, its file in film/out when present, and refuses any other
 # film/out/*.webp; with arguments, each file's name must be an allowed one. Each file is a regular file, not a
-# symlink. It goes into the tree under its own name (film/out/film.webp is film.webp, the launch film's URL).
+# symlink and no larger than its film's cap (film/max-bytes.txt, FILM_MAX_BYTES overrides it, as in record.mjs): the
+# render job already checks it, but it runs code of an untrusted ref, so this job checks again, before anything is
+# hashed. It goes into the tree under its own name (film/out/film.webp is film.webp, the launch film's URL).
 # bash 3.2 compatible: it runs on macOS too.
 set -euo pipefail
 # shellcheck source=film/inputs.sh
@@ -32,6 +34,37 @@ for name in "${FILMS[@]}"; do
     if [ "$name" = launch ]; then ALLOWED+=(film.webp); else ALLOWED+=("${name}.webp"); fi
 done
 allowed() { local a; for a in "${ALLOWED[@]}"; do [ "$a" = "$1" ] && return 0; done; return 1; }
+
+# The size cap of each film, from the file record.mjs reads too (film/max-bytes.txt: `<film> <bytes>`, `default` for a
+# film with no line; blank lines and # comments skipped). FILM_MAX_BYTES, when set, replaces every film's cap.
+POSINT='^[1-9][0-9]*$'
+CAPKEYS=()
+CAPVALS=()
+while IFS= read -r line || [ -n "$line" ]; do
+    line="${line//$'\r'/}"
+    key=""; bytes=""; extra=""
+    read -r key bytes extra <<<"$line" || true
+    case "$key" in "" | "#"*) continue ;; esac
+    { [ -z "$extra" ] && [[ "$bytes" =~ $POSINT ]]; } || { printf 'publish: film/max-bytes.txt: "%s" is not "<film> <positive number of bytes>"\n' "$line" >&2; exit 1; }
+    CAPKEYS+=("$key")
+    CAPVALS+=("$bytes")
+done < film/max-bytes.txt
+# The last line for a name wins, as in record.mjs.
+cap_of() {
+    local i want="$1" found="" dflt=""
+    for i in "${!CAPKEYS[@]}"; do
+        if [ "${CAPKEYS[$i]}" = "$want" ]; then found="${CAPVALS[$i]}"; fi
+        if [ "${CAPKEYS[$i]}" = default ]; then dflt="${CAPVALS[$i]}"; fi
+    done
+    [ -n "$dflt" ] || { echo 'publish: film/max-bytes.txt has no "default" line' >&2; return 1; }
+    printf '%s' "${found:-$dflt}"
+}
+cap_of default >/dev/null || exit 1
+MAXENV="${FILM_MAX_BYTES:-}"
+if [ -n "$MAXENV" ] && ! [[ "$MAXENV" =~ $POSINT ]]; then
+    printf 'publish: FILM_MAX_BYTES must be a positive number of bytes, got "%s"\n' "$MAXENV" >&2
+    exit 1
+fi
 
 # Why only the listed names (D1068): the files come from the render job, which runs code of an untrusted ref, so
 # a file name is data it chose. `git mktree` below reads one line per entry, `<mode> blob <id><TAB><name>`, so a
@@ -56,11 +89,22 @@ else
     done
 fi
 
-ENTRIES=""
-SEEN=" "
+# Every file is checked before the first is hashed, so a refused publish leaves no object behind. The cap is the one of
+# the film the file name stands for (film.webp is launch, <name>.webp is <name>).
 for f in "${FILES[@]}"; do
     [ -f "$f" ] && [ ! -L "$f" ] || { printf 'publish: %q is not a regular file, render it first (film/README.md)\n' "$f" >&2; exit 1; }
     [ -s "$f" ] || { echo "publish: ${f} is empty, render it first (film/README.md)" >&2; exit 1; }
+    name="${f##*/}"
+    if [ "$name" = film.webp ]; then film=launch; else film="${name%.webp}"; fi
+    cap="${MAXENV:-$(cap_of "$film")}"
+    size="$(wc -c < "$f")"
+    size="${size//[[:space:]]/}"
+    [ "$size" -le "$cap" ] || { printf 'publish: %q is %s bytes, over the cap of %s bytes (film/max-bytes.txt, FILM_MAX_BYTES): shorten the film or raise the cap, nothing was published\n' "$f" "$size" "$cap" >&2; exit 1; }
+done
+
+ENTRIES=""
+SEEN=" "
+for f in "${FILES[@]}"; do
     name="${f##*/}"
     case "$SEEN" in
     *" ${name} "*) echo "publish: two files are named ${name}" >&2; exit 1 ;;
