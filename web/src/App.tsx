@@ -849,17 +849,21 @@ export function App() {
         : null,
     [clusterGraph, unfoldCluster, foldCluster],
   );
-  // The switch is offered only where the KB is above the threshold: below it
-  // there is nothing to cluster.
+  // The switch is offered only where there is something to cluster: a KB
+  // above the threshold, drawn clustered or forced flat (a small Map answered
+  // flat by the server offers none).
   const graphLevel = useMemo<GraphLevel | undefined>(
     () =>
-      clustersAvailable() && kbTotal !== undefined && kbTotal > clusterThreshold.current
+      clustersAvailable() &&
+      kbTotal !== undefined &&
+      kbTotal > clusterThreshold.current &&
+      (clusterView !== null || view.graph === "nodes")
         ? {
             mode: view.graph === "nodes" ? "nodes" : "clusters",
             onChange: (mode) => navigate({ graph: mode === "nodes" ? "nodes" : null }),
           }
         : undefined,
-    [kbTotal, view.graph, navigate],
+    [kbTotal, view.graph, navigate, clusterView],
   );
 
   const expandConcept = useCallback(

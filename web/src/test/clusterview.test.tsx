@@ -6,6 +6,7 @@ import type { ClusterGraph, GraphSnapshot } from "../api/types";
 import { clusterWeight, edgeStrokes, GraphView, type ClusterView } from "../components/GraphView";
 import { Legend } from "../components/Legend";
 import { snapshotCommunities } from "../lib/communities";
+import { beside } from "../lib/graph3d/physics";
 import { graph, json, overview, stubApi } from "./fixtures";
 import { sceneStub } from "./sceneStub";
 
@@ -65,6 +66,8 @@ describe("the cluster view", () => {
     expect(lastData().links.filter((l) => l === "c:infra/a>c:~tail")).toHaveLength(3);
     expect(lastData().links).toContain("infra/a>infra/b");
     expect(screen.getByText("2 clusters, 30,000 concepts; 0 unfolded")).toBeInTheDocument();
+    // One colour per drawn thing, in the order the scene got them.
+    expect(sceneStub.calls.colours.at(-1)).toHaveLength(lastData().positions.size);
   });
 
   it("unfolds a cluster on click, never selects it", async () => {
@@ -90,8 +93,7 @@ describe("the cluster view", () => {
     });
     rerender(<GraphView {...props(members, { clusterView: opened })} />);
     await waitFor(() => expect(lastData().positions.has("infra/a")).toBe(true));
-    const p = lastData().positions.get("infra/a")!;
-    expect(Math.hypot(p.x! - at.x!, p.y! - at.y!, p.z! - at.z!)).toBeLessThan(Math.hypot(at.x!, at.y!, at.z!) + 1);
+    expect(lastData().positions.get("infra/a")).toEqual(beside(at, "infra/a"));
   });
 
   it("says how much of an unfolded cluster is shown, and folds it from its chip or Escape", async () => {
@@ -124,6 +126,56 @@ describe("the cluster view", () => {
     expect(screen.queryByRole("group", { name: "Graph level" })).toBeNull();
   });
 
+  describe("zooming in on a cluster", () => {
+    const realMatchMedia = window.matchMedia;
+    const width = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth");
+    const height = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+    beforeEach(() => {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => 800 });
+      Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => 600 });
+      // The one in the middle, large in view; the other at a corner.
+      sceneStub.view = {
+        project: (id) => (id === "c:infra/a" ? { x: 400, y: 300 } : { x: 10, y: 10 }),
+        radius: 1e6,
+      };
+    });
+    afterEach(() => {
+      window.matchMedia = realMatchMedia;
+      if (width) Object.defineProperty(HTMLElement.prototype, "clientWidth", width);
+      if (height) Object.defineProperty(HTMLElement.prototype, "clientHeight", height);
+    });
+    const zoom = async (v: ClusterView) => {
+      render(<GraphView {...props(members, { clusterView: v })} />);
+      await waitFor(() => expect(sceneStub.calls.data.length).toBeGreaterThan(0));
+      document.querySelector(".graph3d")!.dispatchEvent(new WheelEvent("wheel", { deltaY: -50 }));
+      act(() => sceneStub.frame());
+      act(() => sceneStub.frame());
+    };
+
+    it("unfolds the one in the middle, once per zoom", async () => {
+      const v = view();
+      await zoom(v);
+      expect(v.onUnfold).toHaveBeenCalledTimes(1);
+      expect(v.onUnfold).toHaveBeenCalledWith("c:infra/a");
+    });
+
+    it("never under reduced motion: a click is the only way", async () => {
+      window.matchMedia = ((query: string) => ({
+        matches: query.includes("reduce"),
+        media: query,
+        onchange: null,
+        addEventListener() {},
+        removeEventListener() {},
+        addListener() {},
+        removeListener() {},
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia;
+      const v = view();
+      await zoom(v);
+      expect(v.onUnfold).not.toHaveBeenCalled();
+    });
+  });
+
   it("lists the clusters in the legend, each a button that unfolds it", async () => {
     const onUnfold = vi.fn();
     render(
@@ -136,7 +188,7 @@ describe("the cluster view", () => {
         onUnfold={onUnfold}
       />,
     );
-    expect(screen.getByText(/2 clusters ·/)).toBeInTheDocument();
+    expect(screen.getByText(/2 clusters · 3 concepts/)).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole("button", { name: "Unfold Alpha, 3,400 concepts" }));
     expect(onUnfold).toHaveBeenCalledWith("c:infra/a");
   });
@@ -176,5 +228,44 @@ describe("the cluster view in the Atlas", () => {
     const level = await screen.findByRole("group", { name: "Graph level" });
     await userEvent.setup().click(within(level).getByRole("button", { name: "Nodes" }));
     await waitFor(() => expect(new URLSearchParams(window.location.search).get("graph")).toBe("nodes"));
+  });
+
+  it("offers no level switch over a Map the server answers flat", async () => {
+    window.history.replaceState(null, "", "/ui/?kb=kb-a&scope=infra");
+    stubApi({
+      "/overview": () => json(large),
+      "/graph/clusters": () => json({ ...answer, mode: "nodes", clusters: [], edges: [], nodes: graph.nodes }),
+    });
+    render(<App />);
+    await screen.findByTestId("graph-view");
+    await waitFor(() => expect(sceneStub.calls.data.length).toBeGreaterThan(0));
+    expect(screen.queryByRole("group", { name: "Graph level" })).toBeNull();
+  });
+});
+
+describe("the legend's cluster list", () => {
+  it("lists every cluster on request: the keyboard's way to each one", async () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({
+      id: `c:m/x${i}`,
+      label: `Cluster ${i}`,
+      size: 100 - i,
+      slot: 1,
+      internal_edges: 0,
+    }));
+    render(
+      <Legend
+        snapshot={members}
+        communities={snapshotCommunities(members)}
+        colorBy="community"
+        onColorBy={() => {}}
+        clusters={many}
+        onUnfold={() => {}}
+      />,
+    );
+    expect(screen.getAllByRole("button", { name: /^Unfold / })).toHaveLength(6);
+    expect(screen.getByText("Other clusters")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Show all 9 clusters" }));
+    expect(screen.getAllByRole("button", { name: /^Unfold / })).toHaveLength(9);
+    expect(screen.queryByText("Other clusters")).toBeNull();
   });
 });

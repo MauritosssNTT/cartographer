@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { GraphCluster, GraphSnapshot } from "../api/types";
 import { OTHER_SLOT, type Communities } from "../lib/communities";
 import { shortLabel } from "../lib/encoding";
@@ -54,9 +55,13 @@ export function Legend({
     : colorBy === "community"
       ? communityRows(communities, snapshot)
       : collectionRows(snapshot);
-  const shown = rows.slice(0, ROWS);
-  const rest = rows.slice(ROWS).reduce((sum, row) => sum + row.count, tail);
-  const nodes = snapshot.nodes.length;
+  // The cluster rows are the keyboard's way to unfold a cluster: every one of
+  // them can be listed, not only the largest.
+  const [all, setAll] = useState(false);
+  const shown = clusters && all ? rows : rows.slice(0, ROWS);
+  const rest = rows.slice(shown.length).reduce((sum, row) => sum + row.count, tail);
+  // Folded concepts count too: the snapshot holds only the unfolded ones.
+  const nodes = clusters ? snapshot.total_nodes : snapshot.nodes.length;
   const edges = snapshot.edges.length;
 
   return (
@@ -64,12 +69,16 @@ export function Legend({
       <div className="legend__head">
         <p className="legend__context">
           <span className="legend__facts">
-            {clusters && (
+            {clusters ? (
               <>
-                {clusters.length} cluster{clusters.length === 1 ? "" : "s"} ·{" "}
+                {clusters.length} cluster{clusters.length === 1 ? "" : "s"} · {nodes.toLocaleString("en")} concept
+                {nodes === 1 ? "" : "s"}
+              </>
+            ) : (
+              <>
+                {nodes} concept{nodes === 1 ? "" : "s"} · {edges} link{edges === 1 ? "" : "s"}
               </>
             )}
-            {nodes} concept{nodes === 1 ? "" : "s"} · {edges} link{edges === 1 ? "" : "s"}
           </span>
         </p>
         <GrowthButton />
@@ -122,6 +131,11 @@ export function Legend({
           </li>
         )}
       </ul>
+      {clusters && rows.length > ROWS && (
+        <button type="button" className="legend__option" aria-expanded={all} onClick={() => setAll((v) => !v)}>
+          {all ? "Show fewer clusters" : `Show all ${rows.length} clusters`}
+        </button>
+      )}
     </section>
   );
 }

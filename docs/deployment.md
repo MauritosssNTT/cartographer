@@ -1501,8 +1501,10 @@ overlaid strokes as it stands for more links (WebGL lines are one pixel wide).
 Clicking a cluster, or zooming in on it near the middle of the canvas (never
 under reduced motion), unfolds it: its members grow out of where it stood, and a
 chip names it with "Showing x of y" when not all of them fit and a **Fold**
-button (Escape on it folds too). The legend lists the clusters, each a button
-that unfolds it; a notice says how many clusters, concepts and unfolded clusters
+button (Escape on it folds too). On the whole KB's view the legend lists the
+largest clusters and, on request, all of them, each a button that unfolds it
+(the keyboard's way to a cluster; with a concept open or on a Map, the palette's
+pick of a folded concept unfolds its cluster); a notice says how many clusters, concepts and unfolded clusters
 there are; a **Clusters / Nodes** switch beside the camera keeps the flat top
 2,000 at hand; and the growth replay is off until Nodes is chosen. A browser without WebGL
 gets the concept list, search and inspector, with a note where the graph would

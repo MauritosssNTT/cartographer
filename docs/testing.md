@@ -710,10 +710,12 @@ toolchain (D227). What they hold:
   saying so when the server fell back to them, and starting each opening unpressed;
 - the cluster view (D-new-atlas-cluster-view, `src/test/clusterview.test.tsx`):
   clusters drawn beside the unfolded concepts with a log-scale weight, a weighted
-  edge as one to three overlaid strokes, a click unfolding and never selecting,
+  edge as one to three overlaid strokes, a click unfolding and never selecting, a
+  zoom unfolding the cluster in the middle once (never under reduced motion),
   members growing out of their cluster's place, the "Showing x of y" chip with
   its Fold (and Escape), the Clusters / Nodes switch in the URL, the replay off,
-  and the legend's clusters each a button named "Unfold <label>, <n> concepts";
+  the switch absent over a Map answered flat, and the legend's clusters, all of
+  them on request, each a button named "Unfold <label>, <n> concepts";
 - the clustered graph's data layer (D-new-atlas-cluster-view,
   `src/test/clusterstate.test.tsx`, `src/test/viewstate.test.ts`): the flat route
   below the threshold and with `graph=nodes`, the clusters route above it with the

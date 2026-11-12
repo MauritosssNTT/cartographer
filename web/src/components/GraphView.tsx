@@ -433,6 +433,8 @@ function View({
       nodeStore.current = { key: layoutKey, nodes: before.nodes, artifacts: before.artifacts };
     } else {
       nodeStore.current = { key: layoutKey, nodes: new Map(), artifacts: new Map() };
+      // Another KB's clusters: their members are not this one's.
+      membersOf.current = new Map();
     }
   }
   const layoutKeyRef = useRef(layoutKey);

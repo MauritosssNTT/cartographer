@@ -4527,3 +4527,9 @@ a.rail__panel { text-decoration: none; }
 .graph[data-growing] .graph__level {
   visibility: hidden;
 }
+
+/* Every cluster listed: the card scrolls rather than covering the canvas. */
+.legend__rows:has(.legend__unfold) {
+  max-height: 40vh;
+  overflow-y: auto;
+}

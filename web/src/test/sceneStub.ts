@@ -18,6 +18,13 @@ export const sceneStub = {
   fail: false,
   /** The callbacks the last on-screen scene was built with: a test clicks a node through them. */
   callbacks: null as { onSelect(id: string | null): void } | null,
+  /** What the on-screen scene answers for a node's screen position and radius (default: off screen, 1). */
+  view: {} as { project?(id: string): { x: number; y: number } | null; radius?: number },
+  /** The on-screen scene, so a test can run its frame listeners. */
+  scene: null as { frame(): void } | null,
+  frame() {
+    this.scene?.frame();
+  },
   created: 0,
   calls: {
     focus: [] as string[],
@@ -37,6 +44,7 @@ export const sceneStub = {
   reset() {
     this.calls = { focus: [], unfocus: 0, colours: [], data: [], fit: [], follow: [], unfocusArgs: [] };
     this.offline = { created: 0, frames: [], disposed: 0, seeded: 0 };
+    this.view = {};
   },
 };
 
@@ -54,7 +62,10 @@ export class LivingScene {
     if (sceneStub.fail) throw new Error("stub: no WebGL");
     sceneStub.created++;
     this.offscreen = !!options?.offscreen;
-    if (!this.offscreen) sceneStub.callbacks = callbacks as typeof sceneStub.callbacks;
+    if (!this.offscreen) {
+      sceneStub.callbacks = callbacks as typeof sceneStub.callbacks;
+      sceneStub.scene = this;
+    }
     if (this.offscreen) sceneStub.offline.created++;
   }
   renderFrame(ms: number): void {
@@ -131,11 +142,14 @@ export class LivingScene {
   nodeById(id: string) {
     return this.nodes.find((n) => n.id === id);
   }
-  project() {
-    return null;
+  project(node: { id: string }) {
+    return sceneStub.view.project?.(node.id) ?? null;
   }
   radiusOf() {
-    return 1;
+    return sceneStub.view.radius ?? 1;
+  }
+  frame(): void {
+    for (const listener of this.frameListeners) listener();
   }
   dispose(): void {
     if (this.offscreen) sceneStub.offline.disposed++;
