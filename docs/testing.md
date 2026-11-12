@@ -1055,7 +1055,13 @@ the whole evidence. When every failure in it is a named Go test (`scripts/test-f
 not a build, vet, smoke, `e2e` or web failure, not a timeout, a panic or a data race report),
 the signoff runs their packages once more, whole, uncached and where they failed (`make
 test-rerun`, the race ones as `race` does, or `go test -count=1` through `SIGNOFF_WINDOWS` for the
-Windows leg). Only make's own failure (exit 2) is retried: another exit is the wrapper's. The
+Windows leg). Only make's own failure (exit 2) is retried: another exit is the wrapper's (ssh and rsync
+exit 255 when the connection drops), and so is a retry that ends with an exit that is not the
+tests' own (make's 2, the Windows retry's 1). On the Windows leg the shards' exit 1 is the tests',
+75 an unavailable machine and any other exit the wrapper's. A wrapper failure is not a red gate:
+the signoff ends with `signoff: the build host failed (exit N) before the gate finished: nothing
+pushed, nothing posted` (`the Windows machine` for that leg), a line of its own that the lander
+reads, and a retry that lost its host never prints `confirmed on a targeted retry`. The
 log holds the tests' output too, so the script reads only lines in `go test`'s exact shape, and
 a line that looks like one but is not gets no retry. Green, the tests are flaky:
 the signoff goes on, names them on a `signoff: flaky:` line and in the status (`<n> flaky
@@ -1074,7 +1080,12 @@ line names their packages and platform, and each bisection step runs only those
 (`scripts/signoff.sh --probe`, a minute or two instead of a full signoff, D1878);
 the prefix before the rejected change then gets one full signoff before it lands (red: the
 train is composed again), and a probe whose machine is unavailable falls back to full gates. A gate that fails for a reason that is not a test (the signoff stops before
-the targets) stops the lander and leaves the queue untouched. Once the train PR merged, a
+the targets) stops the lander and leaves the queue untouched. A gate that ends with `the build host
+failed (exit N) before the gate finished` (the connection to the build host or the Windows machine
+dropped, no test failed) is neither red nor flaky: the lander gates the same tree again, without a
+re-run's flaky issue and without bisection, up to `LAND_INFRA_TRIES` gates in a row (3, `LAND_INFRA_WAIT`
+seconds apart, 120), then stops with the queue untouched, naming the failure; the log of each failed
+attempt is kept as `gate-<id>.log.host<n>`. Once the train PR merged, a
 queue entry whose deletion fails for a reason that is not the lease is retried, then stops
 the lander; a queued change that `main` already holds, by its diff or by a commit carrying its
 `Lander-Slug` and `Lander-Tip` trailers (a pending decision is numbered anew on each landing,

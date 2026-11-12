@@ -58,7 +58,7 @@ func newSignoffEnv(t *testing.T) *signoffEnv {
 	e.write(filepath.Join(bin, "fakemake"), `#!/bin/sh
 case "$*" in *signoff-platform*) echo "make: Entering directory"; echo "$FAKE_PLATFORM"; exit 0 ;; esac
 echo "$*" >> "$FAKE_MAKE_LOG"
-case "$*" in test-rerun*) exit "${FAKE_RERUN_RC:-0}" ;; esac
+case "$*" in test-rerun*) exit "${FAKE_RERUN_RC:-0}" ;; web-perf*) exit "${FAKE_WEBPERF_RC:-0}" ;; esac
 [ -z "${FAKE_MAKE_OUT:-}" ] || printf '%b' "$FAKE_MAKE_OUT"
 exit "${FAKE_MAKE_RC:-0}"
 `, 0o755)
@@ -300,7 +300,7 @@ func TestSignoffRetriesNamedGoTestsOnce(t *testing.T) {
 	t.Run("confirmed", func(t *testing.T) {
 		e := newSignoffEnv(t)
 		e.branch(e.work, "feat/x", "x.txt")
-		out, ok := e.signoff(e.work, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT="+red, "FAKE_RERUN_RC=1")
+		out, ok := e.signoff(e.work, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT="+red, "FAKE_RERUN_RC=2")
 		if ok {
 			t.Fatalf("a red retry must fail the signoff\n%s", out)
 		}
@@ -584,6 +584,123 @@ func TestSignoffFallsBackToCIWhenTheHostIsUnavailable(t *testing.T) {
 			}
 			if !c.ok && len(posts) != 0 {
 				t.Errorf("a red gate job posts nothing: %v", posts)
+			}
+		})
+	}
+}
+
+// hostLine is the signoff line scripts/land.sh gate() reads as "the build host failed, no test
+// did": it is not the "failed (exit N): nothing pushed" line a red gate ends with.
+const hostLine = "before the gate finished: nothing pushed, nothing posted"
+
+// A wrapper that fails with an exit that is not make's (2) or 75 (ssh and rsync exit 255 when the
+// connection drops, #1843, #1938) is not a red gate: the signoff says the build host failed, in a
+// line of its own, and pushes and posts nothing. make's 2 keeps the red line.
+func TestSignoffNamesAWrapperFailureAsTheBuildHost(t *testing.T) {
+	for _, rc := range []string{"255", "1", "137"} {
+		t.Run("exit "+rc, func(t *testing.T) {
+			e := newSignoffEnv(t)
+			e.branch(e.work, "feat/x", "x.txt")
+			out, ok := e.signoff(e.work, "FAKE_MAKE_RC="+rc,
+				"FAKE_MAKE_OUT=--- FAIL: TestA (0.01s)\\nFAIL\\tgithub.com/x/p/a\\t0.2s\\n")
+			if ok {
+				t.Fatalf("a wrapper failure must fail the signoff\n%s", out)
+			}
+			if want := "signoff: the build host failed (exit " + rc + ") " + hostLine; !strings.Contains(out, want) {
+				t.Errorf("the output lacks %q\n%s", want, out)
+			}
+			if strings.Contains(out, "): nothing pushed") || strings.Contains(out, "targeted retry") {
+				t.Errorf("a wrapper failure is neither the red line nor a retried one\n%s", out)
+			}
+			if e.remoteTip("origin", "feat/x") != "" || len(e.posts()) != 0 {
+				t.Errorf("nothing may be pushed or posted\n%s", out)
+			}
+		})
+	}
+}
+
+// The targeted retry goes through the same wrapper: its exit 255 is not the tests failing again, so
+// the failure is not "confirmed" (the lander would skip its re-run and bisect, rejecting a change
+// no test condemned); the retry that does fail on make's 2 stays confirmed.
+func TestSignoffARetryThatLosesTheHostIsNotConfirmed(t *testing.T) {
+	red := "--- FAIL: TestA (0.01s)\\nFAIL\\tgithub.com/x/p/internal/kb\\t0.2s\\nmake: *** [Makefile:23: test] Error 1\\n"
+	e := newSignoffEnv(t)
+	e.branch(e.work, "feat/x", "x.txt")
+	out, ok := e.signoff(e.work, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT="+red, "FAKE_RERUN_RC=255")
+	if ok {
+		t.Fatalf("a retry that cannot finish must fail the signoff\n%s", out)
+	}
+	if want := "signoff: the build host failed (exit 255) " + hostLine; !strings.Contains(out, want) {
+		t.Errorf("the output lacks %q\n%s", want, out)
+	}
+	if strings.Contains(out, "confirmed on a targeted retry") || strings.Contains(out, "signoff: probe:") {
+		t.Errorf("a lost host confirms nothing\n%s", out)
+	}
+	if e.remoteTip("origin", "feat/x") != "" || len(e.posts()) != 0 {
+		t.Errorf("nothing may be pushed or posted\n%s", out)
+	}
+}
+
+// The Windows leg: the shards exit 1 when a test fails; any other exit is the wrapper's.
+func TestSignoffNamesAWindowsWrapperFailureAsTheWindowsMachine(t *testing.T) {
+	setup := func(t *testing.T) (*signoffEnv, string) {
+		e := newSignoffEnv(t)
+		e.goModule()
+		e.branch(e.work, "feat/x", "internal/a/a2.go")
+		e.write(filepath.Join(e.work, "internal", "a", "a2.go"), "package a\n", 0o644)
+		e.run(e.work, "git", "commit", "-q", "-am", "a2")
+		return e, "SIGNOFF_WINDOWS=" + filepath.Join(filepath.Dir(e.winLog), "bin", "fakewin")
+	}
+	t.Run("the leg", func(t *testing.T) {
+		e, win := setup(t)
+		out, ok := e.signoff(e.work, win, "FAKE_WIN_RC=255")
+		if ok {
+			t.Fatalf("a wrapper failure must fail the signoff\n%s", out)
+		}
+		if want := "signoff: the Windows machine failed (exit 255) " + hostLine; !strings.Contains(out, want) {
+			t.Errorf("the output lacks %q\n%s", want, out)
+		}
+		if strings.Contains(out, "the Windows leg failed") || strings.Contains(out, "targeted retry") {
+			t.Errorf("a wrapper failure is not a red leg\n%s", out)
+		}
+		if e.remoteTip("origin", "feat/x") != "" || len(e.posts()) != 0 {
+			t.Errorf("nothing may be pushed or posted\n%s", out)
+		}
+	})
+	t.Run("the retry", func(t *testing.T) {
+		e, win := setup(t)
+		red := "--- FAIL: TestW (1.0s)\\r\\nFAIL\\tgithub.com/x/p/internal/a\\t2.0s\\r\\n"
+		out, ok := e.signoff(e.work, win, "FAKE_WIN_RC=1", "FAKE_WIN_OUT="+red, "FAKE_WIN_RERUN_RC=255")
+		if ok {
+			t.Fatalf("a retry that cannot finish must fail the signoff\n%s", out)
+		}
+		if want := "signoff: the Windows machine failed (exit 255) " + hostLine; !strings.Contains(out, want) {
+			t.Errorf("the output lacks %q\n%s", want, out)
+		}
+		if strings.Contains(out, "confirmed on a targeted retry") {
+			t.Errorf("a lost machine confirms nothing\n%s", out)
+		}
+	})
+}
+
+// The deferred web budget test runs through the wrapper too: its make failure (2) stays the red
+// line, its 255 is the build host.
+func TestSignoffNamesAWrapperFailureOfTheDeferredWebPerf(t *testing.T) {
+	for rc, want := range map[string]string{
+		"2":   "make web-perf failed: nothing pushed, nothing posted",
+		"255": "signoff: the build host failed (exit 255) " + hostLine,
+	} {
+		t.Run("exit "+rc, func(t *testing.T) {
+			e := newSignoffEnv(t)
+			e.goModule()
+			e.branch(e.work, "feat/x", "web/src/a.ts")
+			win := "SIGNOFF_WINDOWS=" + filepath.Join(filepath.Dir(e.winLog), "bin", "fakewin")
+			out, ok := e.signoff(e.work, win, "FAKE_WEBPERF_RC="+rc)
+			if ok || !strings.Contains(out, want) {
+				t.Fatalf("want a failure with %q: ok=%v\n%s", want, ok, out)
+			}
+			if e.remoteTip("origin", "feat/x") != "" || len(e.posts()) != 0 {
+				t.Errorf("nothing may be pushed or posted\n%s", out)
 			}
 		})
 	}

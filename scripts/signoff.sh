@@ -21,16 +21,21 @@
 #                 syncs the clean tree to a build host and runs make there); it
 #                 must exit with make's code (2 for failed targets, which alone are
 #                 retried: step 4c), and exit 75 (EX_TEMPFAIL) when the machine is
-#                 unavailable: the gate then runs in CI instead (step 4b). It gets
-#                 plain words: `-k` and the targets, `test-rerun RERUN_PKGS=<a,b>`.
+#                 unavailable: the gate then runs in CI instead (step 4b). Any other
+#                 exit (255 when ssh or rsync dropped) is the wrapper's, not a test's:
+#                 the signoff ends with `the build host failed (exit N) before the gate
+#                 finished` and the lander gates the train again, no flake (step 4d). It
+#                 gets plain words: `-k` and the targets, `test-rerun RERUN_PKGS=<a,b>`.
 #   SIGNOFF_WINDOWS a command that runs its arguments natively on Windows from the
 #                 same tree (empty: no Windows leg). It gets scripts/test-shard.sh, every
 #                 shard at once (SIGNOFF_WINDOWS_SHARDS, default 4), over the packages a
 #                 code change of the branch can break (scripts/affected-pkgs.sh --code:
 #                 a change of documents or scripts has no Windows leg), in parallel with
 #                 the targets, and `go test -count=1 -timeout 20m <packages>` for the
-#                 retry; a failure fails the signoff, an exit 75 is reported and
-#                 skipped (test-windows on main stays the net).
+#                 retry; a failure (exit 1, the shards') fails the signoff, an exit 75 is
+#                 reported and skipped (test-windows on main stays the net), any other
+#                 exit is the wrapper's: `the Windows machine failed (exit N) before the
+#                 gate finished` (step 4d).
 #
 # Plain bash 3.2 (the macOS default): no associative arrays, no GNU-only flags.
 set -euo pipefail
@@ -155,6 +160,16 @@ hosted() {
   exit 0
 }
 
+# 4d. A wrapper failure (#1843). Make fails with exit 2, the Windows shards
+# with exit 1, an unavailable machine says 75: any other exit is the wrapper's (ssh and rsync
+# exit 255 when the connection drops), the log may stop before the targets did and no test
+# failed. The line has a shape of its own, which scripts/land.sh gate() matches: it gates the
+# train again, bounded, and files no flaky issue. A wrapper that dies like this is not red.
+hostrc=
+host_die() { # $1 = what failed, $2 = its exit code
+  die "$1 failed (exit $2) before the gate finished: nothing pushed, nothing posted"
+}
+
 # 4c. The targeted retry (D1755). When every failure of a red log is a
 # named Go test (scripts/test-failures.sh: not a build, vet, smoke, e2e or web failure,
 # a timeout, a panic or a data race), the packages of those tests run once more, whole
@@ -163,12 +178,15 @@ hosted() {
 # the signoff goes on, as the rest of the run (make -k) was green. Red: a `signoff:
 # confirmed on a targeted retry:` line, which the lander reads as no flake. A retry
 # that cannot run (exit 75) fails the signoff like a red one, but without that line:
-# the lander then gates the train again. Only plain words reach the wrappers: the
-# packages joined by commas (RERUN_PKGS), never a regular expression.
+# the lander then gates the train again. A retry that fails with an exit that is not the
+# tests' own (make's 2, the Windows retry's 1) is a wrapper failure (4d): return 2, the
+# exit in $hostrc. Only plain words reach the wrappers: the packages joined by commas
+# (RERUN_PKGS), never a regular expression.
 uniq_words() { printf '%s\n' "$@" | sort -u | paste -sd ' ' -; }
 flaky=
 retry() { # $1 = linux|windows, $2 = the red log; 0 when the retry is green
-  local plan prc=0 names= p0= p1= race pkg name rrc=0
+  local plan prc=0 names= p0= p1= race pkg name rrc=0 own=2
+  [ "$1" != windows ] || own=1
   plan=$("$here/test-failures.sh" "$2") || prc=$?
   [ "$prc" = 0 ] && [ -n "$plan" ] || return 1
   while read -r race pkg name; do
@@ -188,11 +206,12 @@ retry() { # $1 = linux|windows, $2 = the red log; 0 when the retry is green
   case "$rrc" in
     0) echo "signoff: flaky:$names failed and passed on a targeted retry" >&2; flaky="$flaky$names"; return 0 ;;
     75) echo "signoff: the targeted retry could not run (machine unavailable)" >&2; return 1 ;;
-    *) echo "signoff: confirmed on a targeted retry:$names" >&2
+    "$own") echo "signoff: confirmed on a targeted retry:$names" >&2
        # The lander bisects a red train with this command only (signoff.sh --probe).
        p0=${p0// /,} p1=${p1// /,}
        echo "signoff: probe: $1 ${p0:--} ${p1:--}" >&2
        return 1 ;;
+    *) hostrc=$rrc; echo "signoff: the targeted retry did not run to the end (exit $rrc)" >&2; return 2 ;;
   esac
 }
 
@@ -231,7 +250,13 @@ rc=${PIPESTATUS[0]}
 set -e
 secs=$(( $(date +%s) - start ))
 [ "$rc" != 75 ] || hosted
-[ "$rc" = 0 ] || { [ "$rc" = 2 ] && retry linux "$mlog"; } || die "make $targets failed (exit $rc): nothing pushed, nothing posted"
+case "$rc" in
+  0) ;;
+  2) lrc=0; retry linux "$mlog" || lrc=$?
+     [ "$lrc" != 2 ] || host_die "the build host" "$hostrc"
+     [ "$lrc" = 0 ] || die "make $targets failed (exit $rc): nothing pushed, nothing posted" ;;
+  *) host_die "the build host" "$rc" ;;
+esac
 duration=$(printf '%dm%02ds' $((secs / 60)) $((secs % 60)))
 windows="windows not run"
 if [ -n "$win_pid" ]; then
@@ -242,15 +267,23 @@ if [ -n "$win_pid" ]; then
   case "$wrc" in
     0) windows="windows $(printf '%dm%02ds' $((wsecs / 60)) $((wsecs % 60)))" ;;
     75) windows="windows unavailable"; echo "signoff: warning: the Windows machine is unavailable, leg skipped" >&2 ;;
-    *) tail -n 40 "$win_log" >&2
-       { [ "$wrc" = 1 ] && retry windows "$win_log"; } || die "the Windows leg failed (exit $wrc): nothing pushed, nothing posted" ;;
+    1) tail -n 40 "$win_log" >&2
+       lrc=0; retry windows "$win_log" || lrc=$?
+       [ "$lrc" != 2 ] || host_die "the Windows machine" "$hostrc"
+       [ "$lrc" = 0 ] || die "the Windows leg failed (exit $wrc): nothing pushed, nothing posted" ;;
+    *) tail -n 40 "$win_log" >&2; host_die "the Windows machine" "$wrc" ;;
   esac
 fi
 
 # The deferred web budget test, now that nothing else is running.
 if [ -n "$defer" ]; then
   echo "signoff: web-perf, alone" >&2
-  "${mk[@]}" web-perf NPM_CI= || die "make web-perf failed: nothing pushed, nothing posted"
+  wprc=0; "${mk[@]}" web-perf NPM_CI= || wprc=$?
+  case "$wprc" in
+    0) ;;
+    2|75) die "make web-perf failed: nothing pushed, nothing posted" ;;
+    *) host_die "the build host" "$wprc" ;;
+  esac
 fi
 
 # 5. Still the same commit (the tree may differ: a web build rewrites tracked bundle files).

@@ -55,13 +55,18 @@ func newLandEnv(t *testing.T) *landEnv {
 		"GIT_COMMITTER_NAME=user", "GIT_COMMITTER_EMAIL=user@example.com",
 		"FAKE_GH_LOG="+e.ghLog, "FAKE_UP="+e.up, "FAKE_STATE="+filepath.Join(tmp, "gh-state"),
 		"SIGNOFF_MAKE="+filepath.Join(e.bin, "fakemake"), "SIGNOFF_POLL=0",
-		"LAND_STATE="+filepath.Join(tmp, "lander"), "LAND_POLL=0", "LAND_MERGE_TRIES=3",
+		"LAND_STATE="+filepath.Join(tmp, "lander"), "LAND_POLL=0", "LAND_INFRA_WAIT=0", "LAND_MERGE_TRIES=3",
 		"PATH="+e.bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 	)
 	e.write(filepath.Join(e.bin, "fakemake"), `#!/bin/sh
 case "$*" in *signoff-platform*) echo linux/amd64; exit 0 ;; esac
 echo "$*" >> "$FAKE_STATE.make"
-case "$*" in test-rerun*) [ -e CONFIRMED ] && exit 1; exit 0 ;; esac
+# The connection to the build host drops: HOSTDOWN every time, HOSTDOWN1 the first gate only.
+[ -e HOSTDOWN ] && { echo "client_loop: send disconnect: Broken pipe"; exit 255; }
+if [ -e HOSTDOWN1 ] && [ ! -e "$FAKE_STATE.hostdown" ]; then
+  touch "$FAKE_STATE.hostdown"; echo "client_loop: send disconnect: Broken pipe"; exit 255
+fi
+case "$*" in test-rerun*) [ -e CONFIRMED ] && exit 2; exit 0 ;; esac
 [ -e BAD ] && exit 2
 # Another PR merges while the first gate runs (FAKE_MOVE_MAIN): main moves under the train.
 if [ -n "${FAKE_MOVE_MAIN:-}" ] && [ ! -e "$FAKE_STATE.moved" ]; then
@@ -535,6 +540,84 @@ func TestLanderSkipsTheRerunWhenTheRetryConfirms(t *testing.T) {
 	}
 	if strings.Contains(e.log(), "issue create") {
 		t.Errorf("a confirmed failure opens no flaky issue:\n%s", e.log())
+	}
+}
+
+// The connection to the build host drops during the gate (ssh exit 255, #1843, #1938): no test
+// failed, so the lander gates the same train again, without a flaky issue, and lands it.
+func TestLanderGatesAgainWhenTheBuildHostFails(t *testing.T) {
+	e := newLandEnv(t)
+	e.queue("f", "fix(kb): f\n", "2026-01-01T10:00:00Z", map[string]string{"HOSTDOWN1": "x\n"})
+	out, ok := e.land()
+	if !ok {
+		t.Fatalf("land failed\n%s", out)
+	}
+	if got := strings.Join(e.mainSubjects(), " | "); got != "fix(kb): f" {
+		t.Fatalf("main holds %q\n%s", got, out)
+	}
+	if runs := strings.Count(e.makeLog(), "-k gate"); runs != 2 {
+		t.Errorf("the train is gated again once: %d gates\n%s", runs, e.makeLog())
+	}
+	if strings.Contains(e.log(), "issue create") {
+		t.Errorf("a lost host is no flaky test, no issue:\n%s", e.log())
+	}
+	if !strings.Contains(out, "the build host failed (exit 255) before the gate finished") {
+		t.Errorf("the lander says why it gates again\n%s", out)
+	}
+}
+
+// The same for the Windows machine: the leg's wrapper failing with 255 (the shards exit 1 when a
+// test fails) gates the train again, with no flaky issue.
+func TestLanderGatesAgainWhenTheWindowsMachineFails(t *testing.T) {
+	e := newLandEnv(t)
+	e.write(filepath.Join(e.bin, "fakewin"), `#!/bin/sh
+echo "$*" >> "$FAKE_STATE.win"
+if [ ! -e "$FAKE_STATE.windown" ]; then touch "$FAKE_STATE.windown"; echo "Timeout, server not responding"; exit 255; fi
+exit 0
+`)
+	e.queue("w", "fix(changelog): w\n", "2026-01-01T10:00:00Z", map[string]string{"internal/changelog/zz.go": "package changelog\n"})
+	out, ok := e.land("SIGNOFF_WINDOWS=" + filepath.Join(e.bin, "fakewin"))
+	if !ok {
+		t.Fatalf("land failed\n%s", out)
+	}
+	if got := strings.Join(e.mainSubjects(), " | "); got != "fix(changelog): w" {
+		t.Fatalf("main holds %q\n%s", got, out)
+	}
+	if runs := strings.Count(e.makeLog(), "-k gate"); runs != 2 {
+		t.Errorf("the train is gated again once: %d gates\n%s", runs, e.makeLog())
+	}
+	if !strings.Contains(out, "the Windows machine failed (exit 255) before the gate finished") {
+		t.Errorf("the lander says why it gates again\n%s", out)
+	}
+	if strings.Contains(e.log(), "issue create") {
+		t.Errorf("a lost machine is no flaky test, no issue:\n%s", e.log())
+	}
+}
+
+// A build host that stays down stops the lander after LAND_INFRA_TRIES gates, with the queue
+// untouched and the failure named: nothing is rejected, nothing is bisected.
+func TestLanderStopsWhenTheBuildHostStaysDown(t *testing.T) {
+	e := newLandEnv(t)
+	e.queue("f", "fix(kb): f\n", "2026-01-01T10:00:00Z", map[string]string{"HOSTDOWN": "x\n"})
+	out, ok := e.land("LAND_INFRA_TRIES=2")
+	if ok {
+		t.Fatalf("a host that stays down must stop the lander\n%s", out)
+	}
+	if !strings.Contains(out, "infrastructure, not a test: the build host failed (exit 255) before the gate finished") ||
+		!strings.Contains(out, "the queue is untouched") {
+		t.Errorf("the stop names the infrastructure failure\n%s", out)
+	}
+	if runs := strings.Count(e.makeLog(), "-k gate"); runs != 2 {
+		t.Errorf("LAND_INFRA_TRIES bounds the gates: %d gates\n%s", runs, e.makeLog())
+	}
+	if q, f := e.refs("ready/"), e.refs("failed/"); q != "f" || f != "" {
+		t.Errorf("the queue is untouched: ready=%q failed=%q", q, f)
+	}
+	if got := e.mainSubjects(); len(got) != 0 {
+		t.Errorf("nothing lands: %v", got)
+	}
+	if strings.Contains(e.log(), "issue create") {
+		t.Errorf("no issue for a lost host:\n%s", e.log())
 	}
 }
 
