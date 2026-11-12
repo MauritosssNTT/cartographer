@@ -14,8 +14,7 @@ import (
 const (
 	// ClusterThreshold is where the flat view starts truncating.
 	ClusterThreshold = DefaultGraphNodeLimit
-	// MaxClusters is how many communities become clusters; the rest share one
-	// synthetic tail cluster.
+	// MaxClusters communities become clusters; the rest share the tail.
 	MaxClusters        = 150
 	MaxClusterElements = 400
 	MaxClusterEdges    = 1500
