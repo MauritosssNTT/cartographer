@@ -63,7 +63,8 @@ case "$*" in test-rerun*) exit "${FAKE_RERUN_RC:-0}" ;; esac
 exit "${FAKE_MAKE_RC:-0}"
 `, 0o755)
 	// --jq is applied as gh applies it; the hosted fallback's calls answer from
-	// FAKE_GH_BEFORE (the runs listed before the dispatch, default none), then, once
+	// FAKE_GH_BEFORE (the runs listed before the dispatch, default none; that listing
+	// exits FAKE_GH_BEFORE_RC when it is set and not 0), then, once
 	// `workflow run` was called, from FAKE_GH_DISPATCHED (the dispatched run) or, one
 	// line per poll (the last repeats), FAKE_GH_POLLS, and FAKE_GH_JOBS (its jobs).
 	e.write(filepath.Join(bin, "gh"), `#!/bin/bash
@@ -76,7 +77,9 @@ case "$1 $2" in
   "run list")
     case "$*" in
       *workflow_dispatch*)
-        if [ ! -f "$FAKE_GH_LOG.dispatched" ]; then body=${FAKE_GH_BEFORE:-[]}
+        if [ ! -f "$FAKE_GH_LOG.dispatched" ]; then
+          [ "${FAKE_GH_BEFORE_RC:-0}" = 0 ] || exit "$FAKE_GH_BEFORE_RC"
+          body=${FAKE_GH_BEFORE:-[]}
         elif [ -n "${FAKE_GH_POLLS:-}" ]; then
           n=$(cat "$FAKE_GH_LOG.polls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE_GH_LOG.polls"
           body=$(sed -n "${n}p" "$FAKE_GH_POLLS"); [ -n "$body" ] || body=$(tail -n 1 "$FAKE_GH_POLLS")
@@ -631,6 +634,18 @@ func TestSignoffHostedNeverPicksARunThatExistedBeforeTheDispatch(t *testing.T) {
 		}
 		if strings.Contains(e.log(e.ghLog), "run view") || len(e.posts()) != 0 {
 			t.Errorf("nothing is followed or posted:\n%s", e.log(e.ghLog))
+		}
+	})
+	t.Run("the listing before the dispatch fails", func(t *testing.T) {
+		e := newSignoffEnv(t)
+		e.branch(e.work, "feat/x", "x.txt")
+		out, ok := e.signoff(e.work, "FAKE_MAKE_RC=75", "FAKE_GH_BEFORE_RC=1", `FAKE_GH_DISPATCHED=[{"databaseId":7}]`, "FAKE_GH_JOBS="+green)
+		if ok || !strings.Contains(out, "cannot list the ci.yml runs of feat/x: nothing posted") {
+			t.Fatalf("a failed list must stop the signoff, not read as no run yet (ok=%v)\n%s", ok, out)
+		}
+		log := e.log(e.ghLog)
+		if strings.Contains(log, "workflow run") || strings.Contains(log, "run view") || len(e.posts()) != 0 {
+			t.Errorf("nothing is dispatched, followed or posted:\n%s", log)
 		}
 	})
 }
