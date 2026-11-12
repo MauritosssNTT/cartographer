@@ -2865,8 +2865,9 @@ type pendingIndexEntry struct {
 }
 
 // planIndexEntry decides, before anything is written, what index_entry does
-// for a created concept (D714): refuses a top-level id or an unreadable
-// curated index, notes a generated index or an existing link, else schedules
+// for a created concept (D714): refuses a top-level id, an id whose first
+// folder is not a Map (services/ or no _map.md) or an unreadable curated
+// index, notes a generated index or an existing link, else schedules
 // an append.
 func planIndexEntry(k *kb.KB, id string) (pendingIndexEntry, error) {
 	mapName, ok := conceptMapName(id)
@@ -2874,8 +2875,18 @@ func planIndexEntry(k *kb.KB, id string) (pendingIndexEntry, error) {
 		return pendingIndexEntry{}, fmt.Errorf("'index_entry' needs a concept inside a map")
 	}
 	p := pendingIndexEntry{id: id, mapName: mapName}
+	// The services/ tree is the service registry, never a Map: it has no
+	// descriptor and no index, so say that instead of a read error.
+	if kb.IsServicesID(okf.ConceptID(id)) {
+		return p, fmt.Errorf("'index_entry': %s/ is not a Map, so it has no index to add an entry to: drop index_entry", mapName)
+	}
 	contract, err := k.ReadMapContract(mapName)
 	if err != nil {
+		// A first folder with no descriptor is no Map. A descriptor or an
+		// index that exists and cannot be read stays an "unreadable" error.
+		if errors.Is(err, okf.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+			return p, fmt.Errorf("'index_entry': %s/ is not a Map (no _map.md): drop index_entry, or create the Map first", mapName)
+		}
 		return p, fmt.Errorf("'index_entry': %s/index.md unreadable: %w", mapName, err)
 	}
 	if contract.Index == kb.IndexGenerated {

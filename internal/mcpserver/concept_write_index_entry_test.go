@@ -103,6 +103,9 @@ func TestConceptWrite_IndexEntry_RefusedShapesChangeNothing(t *testing.T) {
 		{"missing id with if_match", cwArgs("pages/ghost", "G", "x", map[string]any{"index_entry": true, "if_match": "abc"}), "applies only to a creation"},
 		{"top-level id", cwArgs("toplevel", "Top", "x", map[string]any{"index_entry": true}), "needs a concept inside a map"},
 		{"unreadable index", cwArgs("broken/page", "P", "x", map[string]any{"index_entry": true}), "index.md unreadable"},
+		// services/ is the registry, not a Map; a folder with no _map.md is no Map either.
+		{"services id", cwArgs("services/svc-a", "S", "x", map[string]any{"index_entry": true}), "services/ is not a Map, so it has no index to add an entry to: drop index_entry"},
+		{"folder without a map", cwArgs("nomap/page", "P", "x", map[string]any{"index_entry": true}), "nomap/ is not a Map (no _map.md): drop index_entry, or create the Map first"},
 	}
 	preLog, _ := k.ReadRaw("log.md")
 	preIdx := readIdx(t, k, "pages")
@@ -118,10 +121,13 @@ func TestConceptWrite_IndexEntry_RefusedShapesChangeNothing(t *testing.T) {
 	if postLog != preLog || readIdx(t, k, "pages") != preIdx || string(postBody) != string(preBody) {
 		t.Fatal("log, index or page changed on a refusal")
 	}
-	for _, rel := range []string{"pages/ghost.md", "toplevel.md", "broken/page.md"} {
+	for _, rel := range []string{"pages/ghost.md", "toplevel.md", "broken/page.md", "nomap/page.md"} {
 		if _, err := os.Stat(filepath.Join(k.DataRoot(), rel)); !os.IsNotExist(err) {
 			t.Fatalf("%s written by a refused call", rel)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(k.Root, "services", "svc-a.md")); !os.IsNotExist(err) {
+		t.Fatal("services/svc-a written by a refused call")
 	}
 }
 
