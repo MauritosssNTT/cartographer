@@ -320,8 +320,8 @@ or malformed scenario). A connector has no scenario yet: only recipes are tested
 **Trust: an exec recipe runs.** Only a Starlark recipe is offline: it runs in process and its `http.request` is answered
 from recordings. An exec recipe is the folder's own program, and `plugin test` starts it **as you, with your network and
 your files, with none of the approval `plugin install` asks for**. Before it runs, the command prints one line on stderr
-(`running <recipe> as you, unapproved: <command and arguments>`, escaped like the install preview). Test a folder you did not write
-only after reading that command.
+(`running <recipe> as you, unapproved: <command and arguments>`, escaped like the install preview), with no prompt. Before you test a folder you did not
+write, read what it runs: the `command` and `args` of each `recipes/<name>/recipe.yaml`, and the files they name.
 
 The scenario of the recipe `<name>` is `tests/<name>.yaml`, required. The `tests/` folder is ignored by the tree reader:
 it is neither stored nor part of the digest. Unknown keys are an error.
@@ -336,7 +336,7 @@ it is neither stored nor part of the digest. Unknown keys are an error.
   `next_cursor` (`empty`, `nonempty` or the literal), `error` (a failure code such as `list_failed`) and
   `content_contains`. A step with no `expect` asserts only that the verb succeeds.
 - `http` (Starlark recipes): recorded exchanges `{stage, method, url, query, response: {status, headers, body | body_file}}`.
-  `http.request` is answered from them and from nothing else: it runs every check it runs live (method, https, no
+  `http.request` is answered from them and from nothing else: it runs the checks a live call makes before the network (method, https, no
   credentials in the url, the manifest's `net`, header and size caps, the redirect rules for a recorded 3xx) and then
   answers from the recording instead of resolving or dialing, so a request nobody recorded fails the step naming its
   method and url. A step of `stage: s` sees the exchanges of stage `s` and those with no stage, so a later listing can see
