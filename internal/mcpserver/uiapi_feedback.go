@@ -298,7 +298,10 @@ func (m *MultiKBServer) uiFeedbackDraft(w http.ResponseWriter, r *http.Request) 
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	hosts := []string{r.Host}
+	var hosts []string
+	if r.Host != "" {
+		hosts = append(hosts, r.Host)
+	}
 	if u, err := url.Parse(resourceBaseURL(r)); err == nil && u.Host != "" {
 		hosts = append(hosts, u.Host)
 	}
