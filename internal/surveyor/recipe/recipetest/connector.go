@@ -42,7 +42,8 @@ type ConnectorInput struct {
 // only sees the allowlisted ones), (3) the offered names are valid after
 // aliasing, (4) a call outside the allowlist is refused, (5) the result cap holds
 // (Set.Call enforces it; the kit confirms it), (6) the child sees only the
-// variables the descriptor lists, and (7) no env test value is in a result or an error.
+// variables the descriptor lists (connector.ChildEnv enforces it in production;
+// the kit's own test pins it, no scenario can), and (7) no env test value is in a result or an error.
 func RunConnector(ctx context.Context, in ConnectorInput) []Result {
 	x := &run{in: Input{Name: in.Name, Scenario: in.Scenario}, env: in.Env}
 	cfg := in.Config

@@ -33,7 +33,15 @@ func mcpHelper() *mcp.Server {
 		return text("written"), nil, nil
 	})
 	mcp.AddTool(srv, &mcp.Tool{Name: "env", Description: "environment"}, func(ctx context.Context, r *mcp.CallToolRequest, in noArgs) (*mcp.CallToolResult, any, error) {
-		return text(strings.Join(os.Environ(), "\n")), nil, nil
+		// Only the variables a test sets: the whole environment would pass the
+		// result cap and hide a leak behind it.
+		var out []string
+		for _, kv := range os.Environ() {
+			if strings.HasPrefix(kv, "WIKI_") || strings.HasPrefix(kv, "CONNECTOR_TEST_") {
+				out = append(out, kv)
+			}
+		}
+		return text(strings.Join(out, "\n")), nil, nil
 	})
 	srv.AddTool(&mcp.Tool{Name: "big", Description: "oversize schema", InputSchema: map[string]any{"type": "object",
 		"properties": map[string]any{"q": map[string]any{"type": "string", "description": strings.Repeat("x", 9<<10)}}}},
@@ -138,7 +146,9 @@ func TestTheChildSeesOnlyTheListedVariables(t *testing.T) {
 	t.Setenv("CONNECTOR_TEST_PARENT_ONLY", "parent-only-value-9")
 	sc := calls(Call{Tool: "env", ExpectTextContains: "WIKI_TOKEN="})
 	sc.Env["PARENT_ONLY"] = "parent-only-value-9" // watched: the verdict names it if the child printed it
-	res := RunConnector(context.Background(), connectorInput(t, "acme/wiki", []string{"env"}, sc))
+	in := connectorInput(t, "acme/wiki", []string{"env"}, sc)
+	in.Config.MaxResultBytes = 64 << 10 // room for anything the child prints
+	res := RunConnector(context.Background(), in)
 	for _, r := range res {
 		if r.Check == "call 1 env" && r.Status != Pass {
 			t.Errorf("the listed variable is not in the child: %+v", r)
