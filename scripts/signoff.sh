@@ -24,7 +24,9 @@
 #                 unavailable: the gate then runs in CI instead (step 4b). Any other
 #                 exit (255 when ssh or rsync dropped) is the wrapper's, not a test's:
 #                 the signoff ends with `the build host failed (exit N) before the gate
-#                 finished` and the lander gates the train again, no flake (step 4d). It
+#                 finished` and the lander gates the train again, no flake (step 4d); so
+#                 does a 75 from a targeted retry or the deferred web-perf, which run after
+#                 the gate started: CI cannot take over mid-gate. It
 #                 gets plain words: `-k` and the targets, `test-rerun RERUN_PKGS=<a,b>`.
 #                 The first call, `signoff-platform`, goes through the same rule: only
 #                 126 and 127 (the wrapper is missing or not executable) are a
@@ -195,11 +197,13 @@ host_die() { # $1 = what failed, $2 = its exit code
 # the tests are flaky, named on a `signoff: flaky:` line the lander files as a bug, and
 # the signoff goes on, as the rest of the run (make -k) was green. Red: a `signoff:
 # confirmed on a targeted retry:` line, which the lander reads as no flake. A retry
-# that cannot run (exit 75) fails the signoff like a red one, but without that line:
-# the lander then gates the train again. A retry that fails with an exit that is not the
-# tests' own (make's 2, the Windows retry's 1) is a wrapper failure (4d): return 2, the
-# exit in $hostrc. Only plain words reach the wrappers: the packages joined by commas
-# (RERUN_PKGS), never a regular expression.
+# that fails with an exit that is not the tests' own (make's 2, the Windows retry's 1) is a
+# wrapper failure (4d): return 2, the exit in $hostrc. That includes 75: a retry that cannot
+# run (the machine was lost between the gate and the retry) says nothing about the tests, and
+# a signoff ending in the red line without a "confirmed" line made the lander re-run and, with
+# the host still down, bisect; it exits 69 and the lander gates the same tree again (amends
+# D1755: "a retry that cannot run fails the signoff like a red one"). Only plain words reach
+# the wrappers: the packages joined by commas (RERUN_PKGS), never a regular expression.
 uniq_words() { printf '%s\n' "$@" | sort -u | paste -sd ' ' -; }
 flaky=
 retry() { # $1 = linux|windows, $2 = the red log; 0 when the retry is green
@@ -223,7 +227,7 @@ retry() { # $1 = linux|windows, $2 = the red log; 0 when the retry is green
   fi
   case "$rrc" in
     0) echo "signoff: flaky:$names failed and passed on a targeted retry" >&2; flaky="$flaky$names"; return 0 ;;
-    75) echo "signoff: the targeted retry could not run (machine unavailable)" >&2; return 1 ;;
+    75) hostrc=75; echo "signoff: the targeted retry could not run (machine unavailable)" >&2; return 2 ;;
     "$own") echo "signoff: confirmed on a targeted retry:$names" >&2
        # The lander bisects a red train with this command only (signoff.sh --probe).
        p0=${p0// /,} p1=${p1// /,}
@@ -305,7 +309,7 @@ if [ -n "$defer" ]; then
   wprc=0; "${mk[@]}" web-perf NPM_CI= || wprc=$?
   case "$wprc" in
     0) ;;
-    2|75) die "make web-perf failed (exit $wprc): nothing pushed, nothing posted" ;;
+    2) die "make web-perf failed (exit $wprc): nothing pushed, nothing posted" ;;
     *) host_die "the build host" "$wprc" ;;
   esac
 fi

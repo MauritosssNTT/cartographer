@@ -69,12 +69,17 @@ fi
 # FAKE_PROBE255: the second targeted run (the first is the signoff's retry, the next the
 # bisection's first probe) loses the connection, as a probe of a bisection can.
 case "$*" in test-rerun*)
+  # RETRY75: the signoff's targeted retry of the first gate cannot run (the host was lost since).
+  if [ -e RETRY75 ] && [ ! -e "$FAKE_STATE.retry75" ]; then touch "$FAKE_STATE.retry75"; exit 75; fi
   if [ -n "${FAKE_PROBE255:-}" ]; then
     n=$(cat "$FAKE_STATE.rr" 2>/dev/null || echo 0); echo $((n + 1)) > "$FAKE_STATE.rr"
     [ "$n" = 1 ] && { echo "client_loop: send disconnect: Broken pipe"; exit 255; }
   fi
   [ -e CONFIRMED ] && exit 2; exit 0 ;; esac
-case "$*" in web-perf*) [ -e WEBPERF ] && exit 2; exit 0 ;; esac
+case "$*" in web-perf*)
+  # WEBPERF75: the host is lost at the last step of the first gate (the deferred web-perf).
+  if [ -e WEBPERF75 ] && [ ! -e "$FAKE_STATE.wp75" ]; then touch "$FAKE_STATE.wp75"; exit 75; fi
+  [ -e WEBPERF ] && exit 2; exit 0 ;; esac
 [ -e BAD ] && exit 2
 # Another PR merges while the first gate runs (FAKE_MOVE_MAIN): main moves under the train.
 if [ -n "${FAKE_MOVE_MAIN:-}" ] && [ ! -e "$FAKE_STATE.moved" ]; then
@@ -694,6 +699,50 @@ func TestLanderReadsAFailingWebPerfAsRed(t *testing.T) {
 	}
 	if !strings.Contains(out, "make web-perf failed (exit 2): nothing pushed, nothing posted") {
 		t.Errorf("the signoff names the exit\n%s", out)
+	}
+}
+
+// The host is lost at the last step of the gate (exit 75 of the deferred web-perf, or of the
+// signoff's targeted retry): it says nothing about the tests, so the lander gates the same tree
+// again, with no re-run's flaky issue and no rejection. Before, both ended in the red line
+// (`failed (exit N): nothing pushed`) that makes the lander re-run, and bisect if the host is still down.
+func TestLanderGatesAgainWhenTheHostIsLostAtTheLastStepOfTheGate(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		files   map[string]string
+		windows bool // the deferred web-perf runs only beside a Windows leg
+	}{
+		{"the deferred web-perf", map[string]string{"web/src/a.ts": "x\n", "WEBPERF75": "x\n"}, true},
+		{"the targeted retry", map[string]string{"FLAKYGO": "x\n", "RETRY75": "x\n"}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newLandEnv(t)
+			var env []string
+			if c.windows {
+				e.write(filepath.Join(e.bin, "fakewin"), "#!/bin/sh\nexit 0\n")
+				env = append(env, "SIGNOFF_WINDOWS="+filepath.Join(e.bin, "fakewin"))
+			}
+			e.queue("h", "fix(kb): h\n", "2026-01-01T10:00:00Z", c.files)
+			out, ok := e.land(env...)
+			if !ok {
+				t.Fatalf("land failed\n%s", out)
+			}
+			if got := strings.Join(e.mainSubjects(), " | "); got != "fix(kb): h" {
+				t.Fatalf("main holds %q\n%s", got, out)
+			}
+			if e.refs("failed/") != "" {
+				t.Errorf("nothing is rejected: failed=%q\n%s", e.refs("failed/"), out)
+			}
+			if runs := strings.Count(e.makeLog(), "-k gate"); runs != 2 {
+				t.Errorf("the train is gated again once: %d gates\n%s", runs, e.makeLog())
+			}
+			if strings.Contains(e.log(), "issue create") {
+				t.Errorf("a lost host is no flaky test, no issue:\n%s", e.log())
+			}
+			if !strings.Contains(out, "the build host failed (exit 75) before the gate finished") {
+				t.Errorf("the lander says why it gates again\n%s", out)
+			}
+		})
 	}
 }
 

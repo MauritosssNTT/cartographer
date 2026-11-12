@@ -663,6 +663,46 @@ func TestSignoffARetryThatLosesTheHostIsNotConfirmed(t *testing.T) {
 	}
 }
 
+// A retry that cannot run (exit 75: the machine was lost between the gate and the retry) says
+// nothing about the tests either. It used to end in the red line without a "confirmed" line, and
+// the lander re-ran and, with the host still down, bisected; it is the host failing (exit 69),
+// so the lander gates the same tree again. Amends D1755.
+func TestSignoffARetryThatCannotRunIsTheHostFailing(t *testing.T) {
+	check := func(t *testing.T, e *signoffEnv, out string, code int, who string) {
+		t.Helper()
+		if code != hostExit {
+			t.Fatalf("a retry that cannot run exits %d, got %d\n%s", hostExit, code, out)
+		}
+		if want := "signoff: " + who + " failed (exit 75) " + hostLine; !strings.Contains(out, want) {
+			t.Errorf("the output lacks %q\n%s", want, out)
+		}
+		if strings.Contains(out, "confirmed on a targeted retry") || strings.Contains(out, "signoff: probe:") || landRedLine.MatchString(out) {
+			t.Errorf("a retry that did not run confirms nothing and is not the red line\n%s", out)
+		}
+		if e.remoteTip("origin", "feat/x") != "" || len(e.posts()) != 0 {
+			t.Errorf("nothing may be pushed or posted\n%s", out)
+		}
+	}
+	t.Run("linux", func(t *testing.T) {
+		red := "--- FAIL: TestA (0.01s)\\nFAIL\\tgithub.com/x/p/internal/kb\\t0.2s\\nmake: *** [Makefile:23: test] Error 1\\n"
+		e := newSignoffEnv(t)
+		e.branch(e.work, "feat/x", "x.txt")
+		out, code := e.signoffArgs(e.work, nil, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT="+red, "FAKE_RERUN_RC=75")
+		check(t, e, out, code, "the build host")
+	})
+	t.Run("windows", func(t *testing.T) {
+		e := newSignoffEnv(t)
+		e.goModule()
+		e.branch(e.work, "feat/x", "internal/a/a2.go")
+		e.write(filepath.Join(e.work, "internal", "a", "a2.go"), "package a\n", 0o644)
+		e.run(e.work, "git", "commit", "-q", "-am", "a2")
+		win := "SIGNOFF_WINDOWS=" + filepath.Join(filepath.Dir(e.winLog), "bin", "fakewin")
+		red := "--- FAIL: TestW (1.0s)\\r\\nFAIL\\tgithub.com/x/p/internal/a\\t2.0s\\r\\n"
+		out, code := e.signoffArgs(e.work, nil, win, "FAKE_WIN_RC=1", "FAKE_WIN_OUT="+red, "FAKE_WIN_RERUN_RC=75")
+		check(t, e, out, code, "the Windows machine")
+	})
+}
+
 // The Windows leg: the shards exit 1 when a test fails; any other exit is the wrapper's.
 func TestSignoffNamesAWindowsWrapperFailureAsTheWindowsMachine(t *testing.T) {
 	setup := func(t *testing.T) (*signoffEnv, string) {
@@ -715,6 +755,8 @@ func TestSignoffNamesAWrapperFailureOfTheDeferredWebPerf(t *testing.T) {
 	}{
 		"2":   {"make web-perf failed (exit 2): nothing pushed, nothing posted", 1},
 		"255": {"signoff: the build host failed (exit 255) " + hostLine, hostExit},
+		// The machine was lost at the last step: not the red line scripts/land.sh bisects on.
+		"75": {"signoff: the build host failed (exit 75) " + hostLine, hostExit},
 	} {
 		t.Run("exit "+rc, func(t *testing.T) {
 			e := newSignoffEnv(t)
@@ -727,6 +769,9 @@ func TestSignoffNamesAWrapperFailureOfTheDeferredWebPerf(t *testing.T) {
 			}
 			if code == 1 && !landRedLine.MatchString(out) {
 				t.Errorf("scripts/land.sh gate_once would not read the output as red\n%s", out)
+			}
+			if code == hostExit && landRedLine.MatchString(out) {
+				t.Errorf("a lost machine must not print the red line scripts/land.sh bisects on\n%s", out)
 			}
 			if e.remoteTip("origin", "feat/x") != "" || len(e.posts()) != 0 {
 				t.Errorf("nothing may be pushed or posted\n%s", out)

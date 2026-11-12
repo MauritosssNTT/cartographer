@@ -1066,7 +1066,8 @@ the build host failed (exit N) before the gate finished: nothing pushed, nothing
 Windows machine` for that leg) and exits 69 (EX_UNAVAILABLE), the code the lander reads (the log
 holds the change's own test output, so a line in it proves nothing; 75 stays the wrapper's "machine
 unavailable, run the gate in CI"). A retry that lost its host never prints `confirmed on a targeted
-retry`. The
+retry`; a 75 from the retry or from the deferred `web-perf` (both run after the gate started, so CI
+cannot take over) is the same host failure, exit 69, not the red line. The
 log holds the tests' output too, so the script reads only lines in `go test`'s exact shape, and
 a line that looks like one but is not gets no retry. Green, the tests are flaky:
 the signoff goes on, names them on a `signoff: flaky:` line and in the status (`<n> flaky
