@@ -46,6 +46,13 @@ func gitEnv(extra []string) []string {
 	return append(withServerConfig(append(env, extra...)), "LC_ALL=C")
 }
 
+// Env is the environment a git command of the client runs with when it names
+// the repository itself (-C): gitEnv without extras, so the variables that pin a
+// repository (GIT_DIR, GIT_INDEX_FILE, GIT_WORK_TREE, ...) are dropped. A sync
+// run from a git hook inherits them, and the command would answer for the
+// repository running the hook instead of the one asked about.
+func Env() []string { return gitEnv(nil) }
+
 // repoPinVars are the environment variables that select a repository, its
 // index or its object store instead of the one -C names.
 var repoPinVars = []string{

@@ -25,6 +25,23 @@ func TestGitEnv_NeverPrompts(t *testing.T) {
 	}
 }
 
+// A sync run from a git hook inherits the variables that pin a repository; Env
+// is the environment of a command that names its repository with -C.
+func TestEnv_DropsTheRepositoryPins(t *testing.T) {
+	for _, v := range repoPinVars {
+		t.Setenv(v, "/elsewhere")
+	}
+	env := Env()
+	for _, v := range repoPinVars {
+		if got, ok := envValue(env, v); ok {
+			t.Errorf("%s = %q survives in Env()", v, got)
+		}
+	}
+	if v, _ := envValue(env, "LC_ALL"); v != "C" {
+		t.Errorf("LC_ALL = %q, want C", v)
+	}
+}
+
 func TestNetEnv_SSHBatchMode(t *testing.T) {
 	dir := t.TempDir()
 	runIn(t, dir, "init", "-q")

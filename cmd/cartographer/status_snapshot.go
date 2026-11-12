@@ -647,7 +647,7 @@ func workspaceProviderDiff(cfg *clientconfig.Config, ps []syncProjection, manife
 		ro := statusResolveOptions(cfg, sp.Provider, manifests[projectionKey(sp)])
 		// The same answer sync gave the projection, or the paths-section hash
 		// status recomputes would differ from the recorded one for good (#1897).
-		ro.OmitPathsTable = omitPathsTable(sp)
+		ro.WithholdLocalPaths = withholdLocalPaths(sp)
 		d := provisioning.ComputeDiffResolved(pm, diffLock, ro)
 		merged.Added = append(merged.Added, d.Added...)
 		merged.Updated = append(merged.Updated, d.Updated...)

@@ -55,7 +55,7 @@ func trackedFixture(t *testing.T, provider configurator.Provider) (dir string, m
 // answer on both sides), then a second sync that must write nothing.
 func applyThenJudge(t *testing.T, m contract.Manifest, opts ApplyOptions) (block string) {
 	t.Helper()
-	opts.OmitPathsTable = InstructionsDestTracked(opts)
+	opts.WithholdLocalPaths = InstructionsDestTracked(opts)
 	first, err := Apply(m, opts)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
@@ -112,7 +112,7 @@ func TestApply_OwnedInstructionsFileKeepsThePathsTable(t *testing.T) {
 	if InstructionsDestTracked(opts) {
 		t.Fatal("CLAUDE.local.md is not tracked")
 	}
-	opts.OmitPathsTable = false
+	opts.WithholdLocalPaths = false
 	if _, err := Apply(m, opts); err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +141,7 @@ func TestApply_SymlinkToTrackedFileOmitsThePathsTable(t *testing.T) {
 	if !InstructionsDestTracked(opts) {
 		t.Fatal("a link to a tracked file inside the workspace is a tracked destination")
 	}
-	opts.OmitPathsTable = true
+	opts.WithholdLocalPaths = true
 	first, err := Apply(m, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -166,16 +166,16 @@ func TestApply_SymlinkToTrackedFileOmitsThePathsTable(t *testing.T) {
 // table the block no longer has and report drift for good (TestShared_Convergence).
 func TestComputeDiffResolved_TrackedBlockNeedsTheSameFlag(t *testing.T) {
 	_, m, opts := trackedFixture(t, configurator.ProviderCodex)
-	opts.OmitPathsTable = true
+	opts.WithholdLocalPaths = true
 	first, err := Apply(m, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts.OmitPathsTable = false
+	opts.WithholdLocalPaths = false
 	if d := ComputeDiffResolved(m, first.NewLock, opts); d.InSync {
 		t.Errorf("a status that keeps the table must not read a table-less block as in sync: %+v", d)
 	}
-	opts.OmitPathsTable = true
+	opts.WithholdLocalPaths = true
 	if d := ComputeDiffResolved(m, first.NewLock, opts); !d.InSync {
 		t.Errorf("a status with the sync's flag is in sync: %+v", d)
 	}
@@ -186,7 +186,7 @@ func TestComputeDiffResolved_TrackedBlockNeedsTheSameFlag(t *testing.T) {
 func TestApply_TrackingTheFileLaterRemovesTheTable(t *testing.T) {
 	dir, m, opts := trackedFixture(t, configurator.ProviderCodex)
 	git(t, dir, "rm", "-q", "--cached", "AGENTS.md")
-	opts.OmitPathsTable = InstructionsDestTracked(opts)
+	opts.WithholdLocalPaths = InstructionsDestTracked(opts)
 	first, err := Apply(m, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -196,8 +196,8 @@ func TestApply_TrackingTheFileLaterRemovesTheTable(t *testing.T) {
 	}
 	git(t, dir, "add", "AGENTS.md")
 	opts.Lock = first.NewLock
-	opts.OmitPathsTable = InstructionsDestTracked(opts)
-	if !opts.OmitPathsTable {
+	opts.WithholdLocalPaths = InstructionsDestTracked(opts)
+	if !opts.WithholdLocalPaths {
 		t.Fatal("AGENTS.md is tracked now")
 	}
 	if d := ComputeDiffResolved(m, first.NewLock, opts); d.InSync {
@@ -236,16 +236,18 @@ func TestInstructionsDestTracked_Answers(t *testing.T) {
 		t.Error("an untracked InstructionsRel is not tracked, whatever the matrix names")
 	}
 	// A repository git cannot read keeps today's behaviour: the table stays.
-	prev := gitTrackedFn
-	gitTrackedFn = func(string) (map[string]bool, error) { return nil, errors.New("dubious ownership") }
-	t.Cleanup(func() { gitTrackedFn = prev })
+	prev := trackedPathsFn
+	trackedPathsFn = func(string, ...string) (map[string]bool, error) { return nil, errors.New("dubious ownership") }
+	t.Cleanup(func() { trackedPathsFn = prev })
 	if InstructionsDestTracked(opts) {
 		t.Errorf("a TrackedPaths error must not omit the table (%s)", dir)
 	}
 }
 
-// A link that leaves the workspace says nothing about its tracked set.
-func TestInstructionsDestTracked_LinkOutsideTheWorkspace(t *testing.T) {
+// A destination that resolves outside the workspace fails closed: the
+// workspace's tracked set says nothing about the file it lands in, so the paths
+// are withheld, and no git command is run.
+func TestInstructionsDestTracked_LinkOutsideTheWorkspaceWithholds(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on Windows")
 	}
@@ -257,7 +259,221 @@ func TestInstructionsDestTracked_LinkOutsideTheWorkspace(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "CLAUDE.md")); err != nil {
 		t.Fatal(err)
 	}
+	prev := trackedPathsFn
+	trackedPathsFn = func(string, ...string) (map[string]bool, error) {
+		t.Error("git must not be asked about a destination outside the workspace")
+		return nil, errors.New("not asked")
+	}
+	t.Cleanup(func() { trackedPathsFn = prev })
+	if !InstructionsDestTracked(opts) {
+		t.Error("a target outside the workspace withholds the paths")
+	}
+}
+
+// A workspace that is a subdirectory of a repository, with CLAUDE.md -> ../AGENTS.md
+// (the tracked file one level up): the target is outside the workspace.
+func TestInstructionsDestTracked_SubdirectoryWorkspaceLinkToParent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	root, _, opts := trackedFixture(t, configurator.ProviderClaudeCode)
+	sub := filepath.Join(root, "service")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("..", "AGENTS.md"), filepath.Join(sub, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	opts.BaseDir = sub
+	if !InstructionsDestTracked(opts) {
+		t.Error("CLAUDE.md -> ../AGENTS.md lands in the repository's tracked file: paths withheld")
+	}
+}
+
+// A link in a directory component: .claude -> docs/agent makes
+// .claude/CLAUDE.md the tracked docs/agent/CLAUDE.md. Only the leaf was followed.
+func TestInstructionsDestTracked_SymlinkedDirectoryComponent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	if err := os.MkdirAll(filepath.Join(dir, "docs", "agent"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs", "agent", "CLAUDE.md"), []byte("# rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", filepath.Join("docs", "agent", "CLAUDE.md"))
+	if err := os.Symlink(filepath.Join("docs", "agent"), filepath.Join(dir, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	opts := ApplyOptions{Provider: configurator.ProviderClaudeCode, BaseDir: dir, Scope: contract.ScopeProject, InstructionsRel: ".claude/CLAUDE.md"}
+	if !InstructionsDestTracked(opts) {
+		t.Error("a destination behind a symlinked directory resolves to the tracked file")
+	}
+	git(t, dir, "rm", "-q", "--cached", filepath.Join("docs", "agent", "CLAUDE.md"))
 	if InstructionsDestTracked(opts) {
-		t.Error("a target outside the workspace is not in its tracked set")
+		t.Error("untracked once the resolved file is no longer in the index")
+	}
+}
+
+// The question is asked about the one or two paths concerned, never for the
+// whole index.
+func TestInstructionsDestTracked_AsksAboutTheDestinationOnly(t *testing.T) {
+	_, _, opts := trackedFixture(t, configurator.ProviderCodex)
+	prev := trackedPathsFn
+	var asked []string
+	trackedPathsFn = func(_ string, paths ...string) (map[string]bool, error) {
+		asked = append(asked, paths...)
+		return map[string]bool{}, nil
+	}
+	t.Cleanup(func() { trackedPathsFn = prev })
+	if InstructionsDestTracked(opts) {
+		t.Error("the stub tracks nothing")
+	}
+	if len(asked) != 1 || asked[0] != "AGENTS.md" {
+		t.Errorf("git was asked about %v, want just AGENTS.md", asked)
+	}
+}
+
+// --- the KB's own instruction text (#1897) ---
+
+const citedText = "Design docs: {{path:design}}. Written down: {{\\path:design}}. Syntax: {{repo:<key>}}.\n"
+
+// instructionsFixture is trackedFixture with a KB whose instruction text cites
+// a placeholder itself, plus, with skill, a skill that cites the same key.
+func instructionsFixture(t *testing.T, provider configurator.Provider, skill bool) (dir string, m contract.Manifest, opts ApplyOptions) {
+	t.Helper()
+	dir, _, opts = trackedFixture(t, provider)
+	if !skill {
+		m = contract.MergeArtifacts([]contract.Artifact{instructionsArtifactForExpandTest("kb-a", citedText)})
+		opts.ApprovedMCP = approveAll(m)
+		return dir, m, opts
+	}
+	kbRoot := t.TempDir()
+	skillDir := filepath.Join(kbRoot, "skills", "kb-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: kb-skill\ndescription: Test\n---\nSee {{path:design}}.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sm, err := contract.BuildManifest(nil, map[string]string{"kb-a": kbRoot}, contract.BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildManifest: %v", err)
+	}
+	arts := append([]contract.Artifact{instructionsArtifactForExpandTest("kb-a", citedText)}, sm.Artifacts...)
+	m = contract.MergeArtifacts(arts)
+	opts.ApprovedMCP = approveAll(m)
+	opts.KBRoots = map[string]string{"kb-a": kbRoot}
+	return dir, m, opts
+}
+
+func TestApply_TrackedInstructionsFileKeepsTheKBsPlaceholdersUnexpanded(t *testing.T) {
+	_, m, opts := instructionsFixture(t, configurator.ProviderCodex, false)
+	block := applyThenJudge(t, m, opts)
+	if strings.Contains(block, machinePath) {
+		t.Errorf("the KB's own placeholder leaked a machine path into a tracked file:\n%s", block)
+	}
+	for _, want := range []string{
+		"Design docs: {{path:design}}.",  // left as written for the agent to resolve
+		"Written down: {{path:design}}.", // the escape is still removed
+		"Syntax: {{repo:<key>}}.",        // metasyntax stays verbatim
+		paragraphHead,
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("block lacks %q:\n%s", want, block)
+		}
+	}
+}
+
+// A skill is written to its own file, not into the tracked block: it keeps its
+// expansion while the block withholds the same key.
+func TestApply_TrackedInstructionsFileLeavesSkillExpansionAlone(t *testing.T) {
+	dir, m, opts := instructionsFixture(t, configurator.ProviderCodex, true)
+	opts.WithholdLocalPaths = InstructionsDestTracked(opts)
+	if !opts.WithholdLocalPaths {
+		t.Fatal("AGENTS.md is tracked")
+	}
+	if _, err := Apply(m, opts); err != nil {
+		t.Fatal(err)
+	}
+	skill, err := os.ReadFile(filepath.Join(dir, ".agents", "skills", "kb-skill", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(skill), machinePath) {
+		t.Errorf("the skill keeps its expansion:\n%s", skill)
+	}
+	block, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(block), machinePath) {
+		t.Errorf("the block must not carry the machine path:\n%s", block)
+	}
+}
+
+func TestApply_UntrackedInstructionsFileExpandsTheKBsPlaceholders(t *testing.T) {
+	dir, m, opts := instructionsFixture(t, configurator.ProviderCodex, false)
+	git(t, dir, "rm", "-q", "--cached", "AGENTS.md")
+	block := applyThenJudge(t, m, opts)
+	if !strings.Contains(block, "Design docs: "+machinePath+".") || !strings.Contains(block, "Written down: {{path:design}}.") {
+		t.Errorf("an untracked file keeps today's expansion:\n%s", block)
+	}
+}
+
+// Status judges the block with the sync's flag: the instruction text's own
+// placeholders are part of what the paths-section hash covers only through the
+// flag, and a status without it would report drift for good.
+func TestComputeDiffResolved_KBPlaceholdersNeedTheSameFlag(t *testing.T) {
+	_, m, opts := instructionsFixture(t, configurator.ProviderCodex, false)
+	opts.WithholdLocalPaths = true
+	first, err := Apply(m, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := ComputeDiffResolved(m, first.NewLock, opts); !d.InSync {
+		t.Errorf("a status with the sync's flag is in sync: %+v", d)
+	}
+	opts.WithholdLocalPaths = false
+	if d := ComputeDiffResolved(m, first.NewLock, opts); d.InSync {
+		t.Errorf("a status without the flag must not read the withheld block as in sync: %+v", d)
+	}
+}
+
+// --- the git environment (#1897) ---
+
+// A sync run from a git hook inherits GIT_DIR/GIT_INDEX_FILE: the listing must
+// answer for the workspace it is given, not for the repository running the hook.
+func TestGitTrackedPaths_IgnoresInheritedRepoPins(t *testing.T) {
+	ws := t.TempDir()
+	git(t, ws, "init", "-q")
+	if err := os.WriteFile(filepath.Join(ws, "AGENTS.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, ws, "add", "AGENTS.md")
+	other := t.TempDir()
+	git(t, other, "init", "-q")
+	if err := os.WriteFile(filepath.Join(other, "OTHER.md"), []byte("y\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, other, "add", "OTHER.md")
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(other, ".git", "index"))
+
+	tracked, err := gitTrackedPaths(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tracked["AGENTS.md"] || tracked["OTHER.md"] {
+		t.Errorf("tracked = %v, want the workspace's AGENTS.md and not the other repository's OTHER.md", tracked)
+	}
+	if ok, err := gitTracksFile(ws, "AGENTS.md"); err != nil || !ok {
+		t.Errorf("gitTracksFile(AGENTS.md) = %v, %v", ok, err)
+	}
+	if ok, err := gitTracksFile(ws, "OTHER.md"); err != nil || ok {
+		t.Errorf("gitTracksFile(OTHER.md) = %v, %v: it belongs to the other repository", ok, err)
 	}
 }

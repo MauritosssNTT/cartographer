@@ -526,6 +526,33 @@ func TestCheckSymlinkedDestinations(t *testing.T) {
 		}
 	})
 
+	t.Run("a tracked link to a tracked file says replacing it changes the repository", func(t *testing.T) {
+		repo := cloneOf(t, "example.com/owner/repo", "AGENTS.md")
+		link := filepath.Join(repo, "CLAUDE.md")
+		if err := os.Symlink("AGENTS.md", link); err != nil {
+			t.Fatal(err)
+		}
+		gitIn(t, repo, "add", "CLAUDE.md")
+		f := symlinkedDestinationFindings("claude", repo, provisioning.ManagedProjectRoots(configurator.ProviderClaudeCode, repo))
+		if len(f) != 1 {
+			t.Fatalf("findings = %+v, want one", f)
+		}
+		if want := "; the link itself is tracked, so replacing it changes the repository"; !strings.HasSuffix(f[0].Fix, want) {
+			t.Errorf("fix = %q, want it to end with %q", f[0].Fix, want)
+		}
+	})
+
+	t.Run("an untracked link to a tracked file does not claim the link is tracked", func(t *testing.T) {
+		repo := cloneOf(t, "example.com/owner/repo", "AGENTS.md")
+		if err := os.Symlink("AGENTS.md", filepath.Join(repo, "CLAUDE.md")); err != nil {
+			t.Fatal(err)
+		}
+		f := symlinkedDestinationFindings("claude", repo, provisioning.ManagedProjectRoots(configurator.ProviderClaudeCode, repo))
+		if len(f) != 1 || strings.Contains(f[0].Fix, "the link itself is tracked") {
+			t.Errorf("findings = %+v, want the tracked-target fix without the link sentence", f)
+		}
+	})
+
 	t.Run("a link to an untracked file keeps the plain fix", func(t *testing.T) {
 		repo := cloneOf(t, "example.com/owner/repo")
 		if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("x\n"), 0o644); err != nil {

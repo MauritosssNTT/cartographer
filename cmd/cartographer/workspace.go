@@ -82,13 +82,14 @@ func (p syncProjection) Label() string {
 	return p.Provider + " [" + p.Workspace + "]"
 }
 
-// omitPathsTable decides, once for a projection, whether its instructions
-// block leaves out the "Local paths" table because the file it goes into is
+// withholdLocalPaths decides, once for a projection, whether its instructions
+// block keeps this machine's absolute paths out — the "Local paths" rows and the
+// KB's own placeholders left unexpanded — because the file it goes into is
 // tracked by git (#1897): sync (materializeForProviders) and status
 // (workspaceProviderDiff) both ask it, so the paths-section hash they judge
 // agrees. Only a workspace projection can answer yes; where git cannot say, the
-// table stays.
-func omitPathsTable(p syncProjection) bool {
+// paths stay.
+func withholdLocalPaths(p syncProjection) bool {
 	if p.Scope != contract.ScopeProject || p.Workspace == "" {
 		return false
 	}

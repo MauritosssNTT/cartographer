@@ -91,19 +91,19 @@ func TestExplicitBind_UntrackedAgentsMDKeepsThePathsTable(t *testing.T) {
 	}
 }
 
-func TestOmitPathsTable(t *testing.T) {
+func TestWithholdLocalPaths(t *testing.T) {
 	repo := cloneOf(t, "example.com/owner/repo", "AGENTS.md")
 	ws := syncProjection{Provider: "codex", Workspace: repo, BaseDir: repo, Scope: contract.ScopeProject}
-	if !omitPathsTable(ws) {
+	if !withholdLocalPaths(ws) {
 		t.Error("a workspace projection whose AGENTS.md is tracked omits the table")
 	}
 	global := syncProjection{Provider: "codex", BaseDir: repo, Scope: contract.ScopeGlobal}
-	if omitPathsTable(global) {
+	if withholdLocalPaths(global) {
 		t.Error("the global projection is never judged")
 	}
 	ws.Provider = "claude"
 	ws.InstructionsRel = "CLAUDE.local.md"
-	if omitPathsTable(ws) {
+	if withholdLocalPaths(ws) {
 		t.Error("a derived projection's untracked CLAUDE.local.md keeps the table")
 	}
 }

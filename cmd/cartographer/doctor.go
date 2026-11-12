@@ -1113,11 +1113,14 @@ func symlinkedDestinationFindings(provider, base string, roots []string) []docto
 			blocker = path
 		}
 		fix := "replace the symlink " + escapeControl(blocker) + " with the real directory or file, or: " + symlinksAddCommand(provider, blocker)
-		if tracked, ok := trackedLinkTarget(path); ok {
+		if tracked, linkTracked, ok := trackedLinkTarget(path); ok {
 			// Listing the link would make Apply write through it (#1897).
 			fix = "replace the symlink " + escapeControl(blocker) + " with a real file first: its target " + escapeControl(tracked) +
 				" is tracked by git, so listing the link (" + symlinksAddCommand(provider, blocker) +
 				") would make the instructions block land in the tracked " + escapeControl(tracked) + ", shared with everyone who clones the repository"
+			if linkTracked {
+				fix += "; the link itself is tracked, so replacing it changes the repository"
+			}
 		}
 		out = append(out, doctorFinding{
 			Check: "symlink", Severity: doctorWarning, Path: path,
@@ -1129,24 +1132,30 @@ func symlinkedDestinationFindings(provider, base string, roots []string) []docto
 }
 
 // trackedLinkTarget returns the file a symlink at path finally resolves to when
-// it is a regular file that git tracks in its own repository: a directory link
-// (a skills folder) is not what an instructions block lands in, and a file git
-// does not track, or no repository at all, is not a finding.
-func trackedLinkTarget(path string) (string, bool) {
+// it is a regular file that git tracks in its own repository, and whether the
+// link itself is tracked too: replacing a tracked link with a file is a type
+// change in the repository. A directory link (a skills folder) is not what an
+// instructions block lands in, and a file git does not track, or no repository
+// at all, is not a finding.
+func trackedLinkTarget(path string) (target string, linkTracked, ok bool) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	info, err := os.Stat(resolved)
 	if err != nil || !info.Mode().IsRegular() {
-		return "", false
+		return "", false, false
 	}
 	name := filepath.Base(resolved)
 	tracked, err := gitx.TrackedPaths(filepath.Dir(resolved), name)
 	if err != nil || !tracked[name] {
-		return "", false
+		return "", false, false
 	}
-	return resolved, true
+	linkName := filepath.Base(path)
+	if own, err := gitx.TrackedPaths(filepath.Dir(path), linkName); err == nil {
+		linkTracked = own[linkName]
+	}
+	return resolved, linkTracked, true
 }
 
 // checkTriggerCoverage: a provider with no session hook, or one that fires only
