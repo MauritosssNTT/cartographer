@@ -17,6 +17,13 @@ const (
 	ActionQuit
 )
 
+// ActionMenuOpened is not a menu entry: a UI reports it through onAction when
+// the user is about to see the menu (macOS: the menu is opening; Windows: the
+// icon was clicked or the pointer is over it), so the caller can refresh what
+// the menu shows. It sits in no MenuItem, Actions.Handle ignores it and onAction
+// must return at once, as for any action; it may arrive many times in a row.
+const ActionMenuOpened Action = -1
+
 // ActionOpenKB is the first of the actions that open one KB in the Atlas:
 // ActionOpenKB+i opens the i-th KB of the snapshot the menu was built from.
 const ActionOpenKB Action = 100

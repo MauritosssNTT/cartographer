@@ -23,6 +23,10 @@ const (
 	// `cartographer status` path, which reads files and asks the server, and
 	// its answer changes only on a sync.
 	AgentsInterval = 5 * time.Minute
+	// AgentsDebounce is the shortest time between two reads that the menu
+	// asks for (Deps.AgentRequests): opening it twice in a row, or hovering the
+	// icon, reads the agent clients once.
+	AgentsDebounce = 10 * time.Second
 )
 
 // Deps is what Run needs from the outside; tests replace every field.
@@ -43,8 +47,17 @@ type Deps struct {
 	Logf func(format string, args ...any)
 	// Agents reads the agent clients (`cartographer status`); optional. It
 	// runs off the poll loop, at start, every AgentsInterval worth of polls
-	// and when the server comes back; a poll shows the newest result.
+	// and when the server comes back, and when the menu asks (AgentRequests);
+	// a poll shows the newest result, and a read that finishes is shown at once.
 	Agents func() Agents
+	// AgentRequests carries the UI's wish for fresh agent rows (the menu is
+	// opening); optional. A request starts a read of Agents unless one began
+	// less than AgentsDebounce ago or is still running, and is then dropped: the
+	// running read answers it. The sender must not block (a 1-slot channel and a
+	// non-blocking send).
+	AgentRequests <-chan struct{}
+	// Now is the clock of the debounce; optional (time.Now).
+	Now func() time.Time
 	// Client resolves the client config's server, on every tick; optional
 	// (nil = local mode only). It is consulted only when no local service is
 	// installed and ForceLocal is off. Present false (no client config file)
@@ -121,7 +134,10 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 	var mu sync.Mutex
 	var agents Agents
 	refresh := make(chan struct{}, 1)
+	readDone := make(chan struct{}, 1)
+	var requests <-chan struct{} // nil (never ready) with no Agents to read
 	if d.Agents != nil {
+		requests = d.AgentRequests
 		go func() { // never blocks the icon, nor Quit: Run does not wait for it
 			for {
 				select {
@@ -133,8 +149,23 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 				mu.Lock()
 				agents = a
 				mu.Unlock()
+				select {
+				case readDone <- struct{}{}:
+				default: // Run has not taken the last one yet
+				}
 			}
 		}()
+	}
+	// inflight and lastRead belong to this goroutine: set when a read is
+	// queued, cleared when readDone is taken.
+	inflight := false
+	var lastRead time.Time
+	queueRead := func() {
+		select {
+		case refresh <- struct{}{}:
+			inflight, lastRead = true, d.now()
+		default: // a read is already queued
+		}
 	}
 	every := max(1, int(AgentsInterval/interval))
 	polls := 0
@@ -143,10 +174,7 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 		if d.Agents != nil {
 			back := have && last.State != StateRunning && snap.State == StateRunning
 			if polls%every == 0 || back {
-				select {
-				case refresh <- struct{}{}:
-				default: // a read is already queued
-				}
+				queueRead()
 			}
 			polls++
 			mu.Lock()
@@ -166,8 +194,32 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 			return
 		case <-ticks:
 			poll()
+		case <-requests:
+			if !inflight && d.now().Sub(lastRead) >= AgentsDebounce {
+				queueRead()
+			}
+		case <-readDone:
+			// A read finished: show it now, not at the next tick. The snapshot
+			// is the last one with the new rows; nothing is probed, and the
+			// poll counter is left alone.
+			inflight = false
+			snap := last
+			mu.Lock()
+			snap.Agents = agents
+			mu.Unlock()
+			if snap != last {
+				last = snap
+				emit(snap)
+			}
 		}
 	}
+}
+
+func (d Deps) now() time.Time {
+	if d.Now != nil {
+		return d.Now()
+	}
+	return time.Now()
 }
 
 // snapshot probes once. good holds the last Status that was read successfully:

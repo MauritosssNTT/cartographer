@@ -405,6 +405,102 @@ func TestRunRefreshesAgentsSparingly(t *testing.T) {
 	<-done
 }
 
+// The menu asking for fresh rows reads the agents once, shows the result at
+// once (no tick involved), and a burst or a request during a read adds nothing.
+func TestRunRefreshesAgentsOnRequest(t *testing.T) {
+	f := &fakeEnv{
+		status: service.Status{Installed: true, HTTPAddr: "127.0.0.1:1"},
+		health: &client.Health{Version: "1", Ready: boolp(true)},
+		ticks:  make(chan time.Time), // never ticks: everything below happens off a request
+	}
+	d := f.deps()
+	var mu sync.Mutex
+	reads := 0
+	gate := make(chan struct{}) // a read ends when the test sends
+	d.Agents = func() Agents {
+		mu.Lock()
+		reads++
+		n := reads
+		mu.Unlock()
+		<-gate
+		return Agents{Known: true, N: n}
+	}
+	now := time.Unix(1000, 0)
+	d.Now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	advance := func(by time.Duration) { mu.Lock(); now = now.Add(by); mu.Unlock() }
+	requests := make(chan struct{}) // unbuffered: a second send returns only after Run took the first
+	d.AgentRequests = requests
+	readCount := func() int { mu.Lock(); defer mu.Unlock(); return reads }
+	waitReads := func(want int) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); readCount() != want; time.Sleep(time.Millisecond) {
+			if time.Now().After(deadline) {
+				t.Fatalf("agents read %d times, want %d", readCount(), want)
+			}
+		}
+	}
+	// request sends twice: the second send proves Run has handled the first.
+	request := func() { requests <- struct{}{}; requests <- struct{}{} }
+	settled := func(want int) { // a read that should not start would be counted within this
+		t.Helper()
+		time.Sleep(50 * time.Millisecond)
+		if got := readCount(); got != want {
+			t.Fatalf("agents read %d times, want %d", got, want)
+		}
+	}
+	nextSnapshot := func(out <-chan Snapshot) Snapshot {
+		t.Helper()
+		select {
+		case s := <-out:
+			return s
+		case <-time.After(5 * time.Second):
+			t.Fatal("no snapshot emitted")
+			return Snapshot{}
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan Snapshot, 16)
+	done := make(chan struct{})
+	go func() { Run(ctx, d, 0, func(s Snapshot) { out <- s }); close(done) }()
+	defer func() { cancel(); close(gate); <-done }()
+
+	if first := nextSnapshot(out); first.Agents.Known {
+		t.Fatalf("first snapshot already has agents: %+v", first.Agents)
+	}
+	waitReads(1) // the read at start, still running
+
+	// A request during an in-flight read coalesces into it.
+	request()
+	settled(1)
+	gate <- struct{}{}
+	if s := nextSnapshot(out); !s.Agents.Known || s.Agents.N != 1 {
+		t.Fatalf("a finished read was not emitted at once: %+v", s.Agents)
+	}
+
+	// A burst within the debounce window reads nothing.
+	request()
+	advance(AgentsDebounce - time.Second)
+	request()
+	settled(1)
+
+	// Past the window one request reads once, however many follow it.
+	advance(2 * time.Second)
+	request()
+	waitReads(2)
+	request()
+	request()
+	settled(2)
+	gate <- struct{}{}
+	if s := nextSnapshot(out); s.Agents.N != 2 {
+		t.Fatalf("the requested read was not emitted at once: %+v", s.Agents)
+	}
+	settled(2)
+	if len(out) != 0 {
+		t.Errorf("%d unexpected extra snapshots", len(out))
+	}
+}
+
 // A permanent Status() error is logged once, not on every tick: again only
 // when the message changes or after a success.
 func TestSnapshotLogsARepeatedStatusErrorOnce(t *testing.T) {
