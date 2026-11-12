@@ -20,7 +20,8 @@ func TestBundledSkillToolListsAreAdvertised(t *testing.T) {
 	if err != nil || len(skills) == 0 {
 		t.Fatalf("no bundled SKILL.md under %s (err %v)", root, err)
 	}
-	name := regexp.MustCompile("`([a-z]+_[a-z_]+)`")
+	// One-word tools (reindex) too: IsToolName drops what is not a tool.
+	name := regexp.MustCompile("`([a-z]+(?:_[a-z]+)*)`")
 	checked := 0
 	for _, path := range skills {
 		data, err := os.ReadFile(path)

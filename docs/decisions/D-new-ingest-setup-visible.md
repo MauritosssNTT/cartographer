@@ -23,4 +23,5 @@ call that is rare and idempotent.
 **Consequences.** A bundled skill's `- Tools:` reference bullet names only tools `tools/list`
 advertises, unless the line says the tool is not in `tools/list`
 (`TestBundledSkillToolListsAreAdvertised`). Making a tool a skill prescribes advanced again breaks
-that skill on descriptor-bound clients.
+that skill on descriptor-bound clients. Amends D1256 §Consequences: the planner no longer carries
+a pointer for clients that cannot call `ingest_setup`.
