@@ -1413,7 +1413,9 @@ body cap; the kill switch `GUESTBOOK_OPEN`; exactly the vars `client` (1 to 60 c
 `message` (1 to 500 characters, six lines at most), no links, markup or control characters; three attempts per IP
 per hour and 100 a day overall, counted in a KV namespace; a Llama Guard 3 verdict from Workers AI within 5 s that
 fails closed (an error, a timeout or an exhausted quota refuses the message); then the Worker assigns the id
-`messages/<UTC date>-<6 base36>`. A refusal is a JSON-RPC result with `isError`, so the visitor's agent reads and
+`messages/<UTC date>-<6 base36>` and sets `index_entry: true` (the guestbook's `messages/` index is curated, so a
+message without its entry is refused by the write gate, D907; an `index_entry` the visitor sent is not forwarded).
+A refusal is a JSON-RPC result with `isError`, so the visitor's agent reads and
 relays the reason. After an accepted message the Worker POSTs a Standard Webhooks signed JSON to `NOTIFY_URL`
 when one is configured; what receives it is the operator's business. A message is removed with a `git revert` in
 the private repository.
