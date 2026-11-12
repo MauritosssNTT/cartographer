@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
-import { fetchComponents, fetchFeeds, fetchMaintenanceSummary } from "../api/client";
-import type { ComponentRow, FeedRow, MaintenanceSummary, ReplicaRow } from "../api/types";
+import { fetchAllSources, fetchComponents, fetchFeeds, fetchMaintenanceSummary } from "../api/client";
+import type { ComponentRow, FeedRow, MaintenanceSummary, ReplicaRow, SourceEntry } from "../api/types";
 import { expectedSilent } from "../lib/health";
+import { PageSection } from "./Page";
 
 /** A surveyor that stopped beating leaves the page within this, whatever the live counter does. */
 const REFRESH_MS = 60_000;
@@ -64,6 +65,48 @@ type SurveyorRow = ReplicaRow & { perimeter: string };
 /** Every live Surveyor replica of the components, in the order the server sends them. */
 function liveSurveyors(components: ComponentRow[]): SurveyorRow[] {
   return components.filter((c) => c.kind === "surveyor").flatMap((c) => c.replicas.map((r) => ({ ...r, perimeter: c.name })));
+}
+
+/** One line of the Work strip's alarms: a cause and, when the server knows one, when it heard of it. */
+interface SurveyorAlarm {
+  key: string;
+  cause: string;
+  at?: string;
+}
+
+/**
+ * The alarms of the Surveyors that concern the KB: an expected one that is
+ * silent or short of replicas, one whose budget is spent (once per replica),
+ * and the alarms a Surveyor reported or the server raised. Times are the
+ * server's (`received_at`, `last_seen_at`), never one a Surveyor declared. A
+ * reported alarm of another KB is not shown here (its detail is free text).
+ */
+export function surveyorAlarms(components: ComponentRow[], kb: string): SurveyorAlarm[] {
+  const out: SurveyorAlarm[] = [];
+  for (const c of expectedSilent(components)) {
+    out.push({
+      key: `silent/${c.name}`,
+      cause:
+        c.state === "silent"
+          ? `Surveyor ${c.name} is expected and has not reported`
+          : `Surveyor ${c.name} is expected to run ${c.min_replicas} replicas and ${c.replicas.length} ${c.replicas.length === 1 ? "is" : "are"} reporting`,
+      at: c.state === "silent" ? (c.last_seen_at ?? undefined) : undefined,
+    });
+  }
+  for (const c of components.filter((c) => c.kind === "surveyor")) {
+    for (const r of c.replicas.filter((r) => r.state === "budget_exhausted")) {
+      out.push({ key: `budget/${c.name}/${r.id}`, cause: `Surveyor ${c.name} · ${r.id} has spent its budget`, at: undefined });
+    }
+    for (const [i, a] of c.alarms.entries()) {
+      if (a.kb !== undefined && a.kb !== "" && a.kb !== kb) continue;
+      out.push({
+        key: `alarm/${c.name}/${i}/${a.code}`,
+        cause: `Surveyor ${c.name}: ${a.code}${a.kb && a.detail ? ` - ${a.detail}` : ""}`,
+        at: a.received_at,
+      });
+    }
+  }
+  return out;
 }
 
 function useFeeds(kb: string, live: number): FeedRow[] {
@@ -136,9 +179,20 @@ export function SurveyorsStrip({
 }) {
   const surveyors = liveSurveyors(components);
   const feeds = useFeeds(kb, live);
-  if (surveyors.length === 0 && feeds.length === 0) return null;
+  const alarms = surveyorAlarms(components, kb);
+  if (surveyors.length === 0 && feeds.length === 0 && alarms.length === 0) return null;
   return (
     <section className="surveyors" aria-label="Surveyors and feeds">
+      {alarms.length > 0 && (
+        <ul className="surveyors__list" aria-label="Surveyor alarms">
+          {alarms.map((a) => (
+            <li key={a.key} className="surveyors__row" data-tone="error">
+              <span className="surveyors__error">{a.cause}</span>
+              {a.at && <span className="surveyors__meta">{age(a.at)}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
       {surveyors.length > 0 && (
         <ul className="surveyors__list" aria-label="Surveyors">
           {surveyors.map((w) => (
@@ -215,5 +269,140 @@ export function MaintainedBy({
         </p>
       ))}
     </>
+  );
+}
+
+/**
+ * Settings, Surveyor tab: the KB's Sources by ingest status and the feeds whose
+ * last poll failed. They are the KB's, not the Surveyor's, so the block shows
+ * whether or not a Surveyor has reported. Absent with no KB, on a failed read
+ * (a 404 for a narrowed principal, an older server) or while it loads. The
+ * server caps the list at 500: a count at the cap says "500 or more".
+ */
+export function SourcesBlock({ kb, live = 0 }: { kb: string | null; live?: number }) {
+  const [sources, setSources] = useState<SourceEntry[] | null>(null);
+  // Another KB shows nothing of the previous one while its answer is pending.
+  useEffect(() => {
+    setSources(null);
+  }, [kb]);
+  useEffect(() => {
+    if (!kb) return;
+    const controller = new AbortController();
+    fetchAllSources(kb, controller.signal)
+      .then((res) => setSources(Array.isArray(res?.sources) ? res.sources : []))
+      .catch((err: unknown) => {
+        if (!(err instanceof DOMException && err.name === "AbortError")) setSources(null);
+      });
+    return () => controller.abort();
+  }, [kb, live]);
+  const feeds = useFeedsOf(kb, live);
+  if (!kb || sources === null) return null;
+  const count = (status: string) => sources.filter((s) => s.ingest_status === status).length;
+  const capped = sources.length >= 500;
+  const n = (status: string) => `${count(status)}${capped ? "+" : ""}`;
+  return (
+    <PageSection title="Sources" id="settings-sources" count={sources.length}>
+      <p className="page-note">
+        The Sources registered in {kb}, by ingest status, and the feeds whose last poll failed. A Surveyor&apos;s recipes
+        and connectors are not listed: it reports its typed values only.
+      </p>
+      <ul className="surveyors__list" aria-label="Sources by status">
+        {["pending", "ingested", "skipped"].map((status) => (
+          <li key={status} className="surveyors__row">
+            <span className="surveyors__name">{status}</span>
+            <span className="surveyors__meta">{n(status)}</span>
+          </li>
+        ))}
+      </ul>
+      {feeds.length > 0 && (
+        <ul className="surveyors__list" aria-label="Sources whose last poll failed">
+          {feeds.map((f) => (
+            <li key={f.id} className="surveyors__row" data-tone="error">
+              <span className="surveyors__name">{f.title || f.id}</span>
+              {(f.recipe || f.source_shape) && <span className="surveyors__meta">{f.recipe || f.source_shape}</span>}
+              <span className="surveyors__error">{f.feed_error}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </PageSection>
+  );
+}
+
+function useFeedsOf(kb: string | null, live: number): FeedRow[] {
+  const [rows, setRows] = useState<FeedRow[]>([]);
+  useEffect(() => {
+    setRows([]);
+    if (!kb) return;
+    const controller = new AbortController();
+    fetchFeeds(kb, controller.signal)
+      .then((res) => setRows(Array.isArray(res?.feeds) ? res.feeds : []))
+      .catch((err: unknown) => {
+        if (!(err instanceof DOMException && err.name === "AbortError")) setRows([]);
+      });
+    return () => controller.abort();
+  }, [kb, live]);
+  return rows;
+}
+
+/**
+ * Activity's "Surveyor runs", only when there are runs: the runs the Surveyors
+ * of the components reported for this KB, newest first by the server's clock
+ * (`received_at`), and each replica's last run counts. Nothing renders
+ * (no header, no empty state) without a run or when the read failed.
+ */
+export function SurveyorRunsSection({
+  kb,
+  components,
+  authors = [],
+  onAuthor,
+}: {
+  kb: string;
+  components: ComponentRow[];
+  /** The authors the timeline knows: a Surveyor's changes are `surveyor/...`. */
+  authors?: string[];
+  onAuthor?(author: string): void;
+}) {
+  const surveyors = components.filter((c) => c.kind === "surveyor");
+  const runs = surveyors
+    .flatMap((c) => c.runs.filter((r) => r.kb === kb).map((r) => ({ ...r, perimeter: c.name })))
+    .sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at))
+    .slice(0, 20);
+  const lasts = surveyors.flatMap((c) => c.replicas.filter((r) => r.last_run).map((r) => ({ perimeter: c.name, replica: r })));
+  if (runs.length === 0 && lasts.length === 0) return null;
+  const authorOf = (id: string) => authors.find((a) => a.startsWith("surveyor/") && a.includes(id));
+  return (
+    <PageSection title="Surveyor runs" id="activity-surveyor-runs" count={runs.length + lasts.length}>
+      <ul className="surveyors__list" aria-label="Surveyor runs">
+        {runs.map((r) => (
+          <li key={`${r.perimeter}/${r.run_id}`} className="surveyors__row" data-tone={r.outcome === "ok" ? undefined : "error"}>
+            <span className="surveyors__name">
+              {r.perimeter} · {r.replica}
+            </span>
+            <span>{r.task}</span>
+            <span className="surveyors__meta">{age(r.received_at)}</span>
+            <span className="surveyors__meta">{r.outcome}</span>
+            <span className="surveyors__meta">{r.tokens_spent} tokens</span>
+            {r.error && <span className="surveyors__error">{r.error}</span>}
+            {onAuthor && authorOf(r.replica) && (
+              <button type="button" className="surveyors__link" onClick={() => onAuthor(authorOf(r.replica)!)}>
+                Its changes
+              </button>
+            )}
+          </li>
+        ))}
+        {lasts.map(({ perimeter, replica: r }) => (
+          <li key={`last/${perimeter}/${r.id}`} className="surveyors__row">
+            <span className="surveyors__name">
+              {perimeter} · {r.id}
+            </span>
+            <span>last run</span>
+            <span className="surveyors__meta">
+              {r.last_run!.units_done} units, {r.last_run!.commits} commits, {r.last_run!.tokens_spent} tokens
+            </span>
+          </li>
+        ))}
+      </ul>
+    </PageSection>
   );
 }

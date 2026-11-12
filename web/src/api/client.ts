@@ -351,6 +351,11 @@ export function fetchPendingSources(kb: string, signal?: AbortSignal): Promise<S
   return get<SourceList>(`/kbs/${encodeURIComponent(kb)}/sources?status=pending&limit=500`, signal);
 }
 
+/** Every registered Source whatever its ingest status (the Settings Surveyor tab counts them); the server caps the list at 500. */
+export function fetchAllSources(kb: string, signal?: AbortSignal): Promise<SourceList> {
+  return get<SourceList>(`/kbs/${encodeURIComponent(kb)}/sources?status=*&limit=500`, signal);
+}
+
 export function fetchAssets(kb: string, id: string, signal?: AbortSignal): Promise<AssetList> {
   return get<AssetList>(`/kbs/${encodeURIComponent(kb)}/assets?id=${encodeURIComponent(id)}`, signal);
 }
