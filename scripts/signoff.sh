@@ -64,6 +64,15 @@ die() { echo "signoff: $*" >&2; exit 1; }
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
 
+# The lander's out-of-band channel for the probe (SIGNOFF_PROBE_FILE, scripts/land.sh): the
+# path of a file this run fills with the words of its `signoff: probe:` line, and nothing else.
+# It is read into a plain shell variable and removed from the environment before any target
+# runs, so no child (make, the tests under test) inherits the path; the file is written once,
+# by the exit trap of step 4, after every target is done, so what a test wrote there is gone.
+probe_file=${SIGNOFF_PROBE_FILE:-}
+unset SIGNOFF_PROBE_FILE
+probe_words=
+
 # signoff.sh --probe <linux|windows> <packages> <race packages> (comma-separated, `-` for
 # none): the lander's bisection step (scripts/land.sh, D1878). It runs, on this
 # tree, only the command the targeted retry below ran when it confirmed a red run (its
@@ -231,7 +240,8 @@ retry() { # $1 = linux|windows, $2 = the red log; 0 when the retry is green
     "$own") echo "signoff: confirmed on a targeted retry:$names" >&2
        # The lander bisects a red train with this command only (signoff.sh --probe).
        p0=${p0// /,} p1=${p1// /,}
-       echo "signoff: probe: $1 ${p0:--} ${p1:--}" >&2
+       probe_words="$1 ${p0:--} ${p1:--}"
+       echo "signoff: probe: $probe_words" >&2
        return 1 ;;
     *) hostrc=$rrc; echo "signoff: the targeted retry did not run to the end (exit $rrc)" >&2; return 2 ;;
   esac
@@ -302,7 +312,7 @@ if [ -n "$win_pkgs" ]; then
 fi
 # The leg's wrapper is a child of the subshell: stop it too, or it keeps the machine busy.
 mlog=$(mktemp "${TMPDIR:-/tmp}/signoff-make.XXXXXX")
-trap '[ -z "$win_pid" ] || { pkill -TERM -P "$win_pid" 2>/dev/null; kill "$win_pid" 2>/dev/null; } || true; [ -z "$win_log" ] || rm -f "$win_log" "$win_log.end"; rm -f "$mlog"' EXIT
+trap '[ -z "$win_pid" ] || { pkill -TERM -P "$win_pid" 2>/dev/null; kill "$win_pid" 2>/dev/null; } || true; [ -z "$win_log" ] || rm -f "$win_log" "$win_log.end"; rm -f "$mlog"; [ -z "$probe_file" ] || printf "%s\n" "$probe_words" >"$probe_file" 2>/dev/null || true' EXIT
 # -k: a red run still runs every other target, so its log is the whole evidence (4c).
 # Only make's own failure (exit 2) is retried, and on Windows the shards' (exit 1): any
 # other exit is the wrapper's, and the log may then stop before the targets did.

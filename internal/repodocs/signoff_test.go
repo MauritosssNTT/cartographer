@@ -61,6 +61,9 @@ func newSignoffEnv(t *testing.T) *signoffEnv {
 	e.write(filepath.Join(bin, "fakemake"), `#!/bin/sh
 case "$*" in *signoff-platform*) echo "make: Entering directory"; echo "$FAKE_PLATFORM"; exit 0 ;; esac
 echo "$*" >> "$FAKE_MAKE_LOG"
+# SIGNOFF_PROBE_FILE must never reach a target; FAKE_FORGE_TO is a test that found the file anyway.
+[ -z "${SIGNOFF_PROBE_FILE:-}" ] || echo "INHERITED SIGNOFF_PROBE_FILE" >> "$FAKE_MAKE_LOG"
+[ -z "${FAKE_FORGE_TO:-}" ] || echo "linux forged/pkg -" > "$FAKE_FORGE_TO"
 case "$*" in test-rerun*) exit "${FAKE_RERUN_RC:-0}" ;; web-perf*) exit "${FAKE_WEBPERF_RC:-0}" ;; esac
 [ -z "${FAKE_MAKE_OUT:-}" ] || printf '%b' "$FAKE_MAKE_OUT"
 exit "${FAKE_MAKE_RC:-0}"
@@ -870,4 +873,56 @@ func mustAtoi(t *testing.T, s string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+// The probe goes to the lander out of band (SIGNOFF_PROBE_FILE): the file holds the words of the
+// `signoff: probe:` line when a retry confirmed a failure, and is empty otherwise, whatever a test
+// wrote there while the targets ran; no target inherits the variable (a test could not find the
+// file, and `make`, which runs the tests, never sees it).
+func TestSignoffHandsTheProbeToTheLanderOutOfBand(t *testing.T) {
+	red := "--- FAIL: TestA (0.01s)\\nFAIL\\tgithub.com/x/p/internal/kb\\t0.2s\\nmake: *** [Makefile:23: test] Error 1\\n"
+	run := func(t *testing.T, args []string, extra ...string) (e *signoffEnv, out, file string) {
+		t.Helper()
+		e = newSignoffEnv(t)
+		e.branch(e.work, "feat/x", "x.txt")
+		file = filepath.Join(t.TempDir(), "probefile")
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out, _ = e.signoffArgs(e.work, args, append(extra, "SIGNOFF_PROBE_FILE="+file, "FAKE_FORGE_TO="+file)...)
+		return e, out, file
+	}
+	t.Run("a confirmed failure writes its words, not the forged ones", func(t *testing.T) {
+		e, out, file := run(t, nil, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT="+red, "FAKE_RERUN_RC=2")
+		if got, want := strings.TrimSpace(e.log(file)), "linux github.com/x/p/internal/kb -"; got != want {
+			t.Errorf("probe file = %q, want %q\n%s", got, want, out)
+		}
+		if !strings.Contains(out, "signoff: probe: linux github.com/x/p/internal/kb -\n") {
+			t.Errorf("the line is still printed, for humans\n%s", out)
+		}
+		if strings.Contains(e.log(e.makeLog), "INHERITED") {
+			t.Errorf("a target inherited SIGNOFF_PROBE_FILE\n%s", e.log(e.makeLog))
+		}
+	})
+	t.Run("a red run nothing confirmed leaves the file empty", func(t *testing.T) {
+		e, out, file := run(t, nil, "FAKE_MAKE_RC=2", "FAKE_MAKE_OUT=panic: boom\\nFAIL\\tgithub.com/x/p/internal/kb\\t0.2s\\n")
+		if got := strings.TrimSpace(e.log(file)); got != "" {
+			t.Errorf("probe file = %q, want empty (a test wrote it)\n%s", got, out)
+		}
+		if strings.Contains(e.log(e.makeLog), "INHERITED") {
+			t.Errorf("a target inherited SIGNOFF_PROBE_FILE")
+		}
+	})
+	t.Run("a green run leaves it empty too", func(t *testing.T) {
+		e, out, file := run(t, nil)
+		if got := strings.TrimSpace(e.log(file)); got != "" {
+			t.Errorf("probe file = %q, want empty\n%s", got, out)
+		}
+	})
+	t.Run("--probe does not inherit it either", func(t *testing.T) {
+		e, out, _ := run(t, []string{"--probe", "linux", "github.com/x/p/internal/kb", "-"})
+		if strings.Contains(e.log(e.makeLog), "INHERITED") {
+			t.Errorf("the probe's make inherited SIGNOFF_PROBE_FILE\n%s", out)
+		}
+	})
 }

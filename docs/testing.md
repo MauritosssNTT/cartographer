@@ -1091,15 +1091,26 @@ then is a flaky test, the train lands and a `bug` issue names the failing tests 
 and Playwright names read from the log, the e2e scenarios as `e2e.<scenario>` with their first
 failing lines in the body, a Go panic or `fatal error:` as `pkg.Test (panic)` or `pkg (panic: <message>)`: the test is
 the `--- FAIL` line right before the `panic:`, else go test's `running tests:` entry, else the first `.TestX(` frame of the
-first goroutine; each name is cut to 60 characters, and the title to 200 at a name boundary, `and N more`, since GitHub
-refuses one past 256; what the log copies into the body is printable ASCII without `@`, a panic's package and message without
-`.`, so nothing in a public issue is a mention or a link); red again, the lander
+first goroutine; each name is cut to 60 characters, and listed once in the form it is printed in, so a test whose name a
+panic's entry cut is not named twice; the title is cut to 200 at a name boundary, `and N more`, since GitHub
+refuses one past 256). Every name, from the log or from a `signoff: flaky:` line, passes one filter (`safe_names` in
+`scripts/land.sh`) before it reaches a title, a body or a commit message, because the log holds the change's own
+output: only `[A-Za-z0-9_.-]` is kept (and a panic's ` (panic: <message>)` suffix, in `[A-Za-z0-9 _:-]`), (a `/` becomes `_`), so there is no `@`,
+`#`, `[`, `(` or `:`; the two autolinks that charset can still form are defused by rewriting the name, the same
+text in the title, the body and the commit message of a rejection: `www.` becomes `www_`, and a run of 7 to 40
+lowercase hex digits (a commit link) gets a `_` after it. The lines copied from the log into the body (the first failing
+line of each e2e scenario) are printable ASCII without `@`, in an indented code block. Red again, the lander
 bisects over the train's prefixes (one signoff each) and rejects the first change whose
 prefix is red. When the signoff confirmed the failure on named Go tests, its `signoff: probe:`
-line names their packages and platform (the last such line of the last gate's log, and only
-if it is `linux` or `windows` and two comma-separated lists of `[A-Za-z0-9_./-]` words, none starting with `-`, or `-`: the
-log holds the change's own output, so a line of another shape is no probe and the bisection runs full gates), and each bisection step runs only those
-(`scripts/signoff.sh --probe`, a minute or two instead of a full signoff, D1878);
+line names their packages and platform; the signoff also writes those words to the file the lander passes it in
+`SIGNOFF_PROBE_FILE` (a file of that gate, `gate-<id>.log.probefile`), and the lander reads the probe from that file only,
+never from the log: the log holds the change's own output, and a test can print a well-formed `signoff: probe:` line when
+the real signoff printed none (a panic, a build failure), which would send the bisection after the wrong change. The signoff
+takes the variable out of its environment before it runs any target, so `make` and the tests never see the path, and writes
+the file once, when its targets are done: a test that found the file anyway cannot leave its words there. The file is
+used only if it holds `linux` or `windows` and two comma-separated lists of `[A-Za-z0-9_./-]` words, none starting with `-`, or `-`;
+no file, an empty one or another shape is no probe and the bisection runs full gates. Each bisection step runs only those
+packages (`scripts/signoff.sh --probe`, a minute or two instead of a full signoff, D1878);
 the prefix before the rejected change then gets one full signoff before it lands (red: the
 train is composed again), and a probe whose machine is unavailable, or whose wrapper failed with an exit that is not the platform's
 own (make's 2, the Windows retry's 1: ssh's 255, a signal), reports 75 and falls back to full gates. A gate that fails for a reason that is not a test (the signoff stops before

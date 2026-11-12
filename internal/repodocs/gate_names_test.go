@@ -63,7 +63,7 @@ func writeLog(t *testing.T, body string) string {
 // failingOf runs scripts/land.sh's failing() over a gate log.
 func failingOf(t *testing.T, body string) string {
 	t.Helper()
-	return strings.TrimSpace(landBash(t, []string{"failing"}, `failing "$1"`, nil, writeLog(t, body)))
+	return strings.TrimSpace(landBash(t, []string{"failing", "safe_names"}, `failing "$1"`, nil, writeLog(t, body)))
 }
 
 // The e2e runner's report lists every failed scenario by name and first failing line, in the
@@ -177,6 +177,20 @@ func TestLanderFailingNamesScenariosAndPanics(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a plain test that cuts to the same 60 characters as another is listed once", func(t *testing.T) {
+		long := "Test" + strings.Repeat("L", 70)
+		got := failingOf(t, "--- FAIL: "+long+"A (0.00s)\n--- FAIL: "+long+"B (0.00s)\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\n")
+		if got != long[:60] {
+			t.Errorf("failing() = %q, want %q once", got, long[:60])
+		}
+	})
+	t.Run("a confirmed name cut to 60 covers the plain test it ends in", func(t *testing.T) {
+		long := "Test" + strings.Repeat("L", 70)
+		got := failingOf(t, "--- FAIL: "+long+" (0.00s)\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\nsignoff: confirmed on a targeted retry: kb."+long+"\n")
+		if want := ("kb." + long)[:60]; got != want {
+			t.Errorf("failing() = %q, want %q", got, want)
+		}
+	})
 	t.Run("at most ten", func(t *testing.T) {
 		var b strings.Builder
 		for i := 0; i < 13; i++ {
@@ -358,9 +372,9 @@ func TestLanderFailingAttributesPanicsToTheRightTest(t *testing.T) {
 			"kb (panic: x)"},
 		{"no dot in a message or a package", "panic: see www.example.org now\nFAIL\twww.example.org\t0.1s\n",
 			"wwwexampleorg (panic: see wwwexampleorg now)"},
-		{"a name is cut to 60 characters",
+		{"a test the panic name cut is listed once, not as the cut name and the whole one",
 			"--- FAIL: Test" + strings.Repeat("L", 80) + " (0.00s)\npanic: " + strings.Repeat("m", 80) + "\nFAIL\tgithub.com/x/p/internal/" + strings.Repeat("p", 80) + "\t0.1s\n",
-			strings.Repeat("p", 25) + ".Test" + strings.Repeat("L", 21) + " (panic) Test" + strings.Repeat("L", 56)},
+			strings.Repeat("p", 25) + ".Test" + strings.Repeat("L", 21) + " (panic)"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := failingOf(t, c.log); got != c.want {
@@ -376,7 +390,7 @@ func TestLanderFailingAttributesPanicsToTheRightTest(t *testing.T) {
 	})
 	t.Run("lines gives one name per line", func(t *testing.T) {
 		log := writeLog(t, "panic: oops\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\nE2E FAILED: s1: [FAIL] x\nE2E FAILED: s2: [FAIL] y\n")
-		got := landBash(t, []string{"failing"}, `failing "$1" lines`, nil, log)
+		got := landBash(t, []string{"failing", "safe_names"}, `failing "$1" lines`, nil, log)
 		if want := "kb (panic: oops)\\ne2e.s1\\ne2e.s2\\n"; got != strings.ReplaceAll(want, "\\n", "\n") {
 			t.Errorf("failing lines = %q", got)
 		}
@@ -399,7 +413,7 @@ func TestLanderFlakyIssueTitleIsBounded(t *testing.T) {
 	}
 	const what = "failed once and passed on a re-run"
 	lf := writeLog(t, log.String())
-	title := strings.TrimSpace(landBash(t, []string{"failing", "issue_title"},
+	title := strings.TrimSpace(landBash(t, []string{"failing", "safe_names", "issue_title"},
 		`issue_title "$(failing "$1" lines)" "$2"`, nil, lf, what))
 	if len(title) > 200 {
 		t.Errorf("title of %d characters: %q", len(title), title)
@@ -422,7 +436,7 @@ func TestLanderFlakyIssueTitleIsBounded(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		b.WriteString(long + strconv.Itoa(i) + "\n")
 	}
-	title = strings.TrimSpace(landBash(t, []string{"issue_title"}, `issue_title "$1" "$2"`, nil, b.String(), what))
+	title = strings.TrimSpace(landBash(t, []string{"safe_names", "issue_title"}, `issue_title "$1" "$2"`, nil, b.String(), what))
 	if len(title) > 200 || !strings.HasPrefix(title, "flaky: "+strings.Repeat("n", 60)+" ") || !strings.Contains(title, " and ") {
 		t.Errorf("title of %d characters: %q", len(title), title)
 	}
@@ -434,7 +448,7 @@ func TestLanderFlakyIssueTitleIsBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := filepath.Join(dir, "args")
-	landBash(t, []string{"issue_title", "issue_flaky"},
+	landBash(t, []string{"safe_names", "issue_title", "issue_flaky"},
 		`repo=up/proj; log() { :; }; issue_flaky "$1" "$2" "$3"`,
 		[]string{"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "OUT=" + out},
 		"kb.TestA\nkb.TestB", what, "the body")
@@ -479,56 +493,156 @@ func TestLanderE2EReportIsInert(t *testing.T) {
 	}
 }
 
-// The probe line is read from the gate log, which holds the change's own output: a forged one
-// must never reach `signoff.sh --probe` as arguments of go test or make.
+// The probe comes from a file only the signoff writes (`<log>.probefile`, signoff.sh step 4c), never
+// from the gate log, which holds the change's own output: a test can print a well-formed line when
+// the real signoff printed none. What is in the file is still checked before it becomes the
+// arguments of go test or make through `signoff.sh --probe`.
 func TestLanderProbeIsValidated(t *testing.T) {
-	probeOf := func(t *testing.T, body string) string {
+	// probeOf: a gate log holding logBody and, when file is not nil, its probe file.
+	probeOf := func(t *testing.T, logBody string, file *string) string {
 		t.Helper()
-		return strings.TrimSpace(landBash(t, []string{"probe_of"}, `probe_of "$1"`, nil, writeLog(t, body)))
+		lf := writeLog(t, logBody)
+		if file != nil {
+			if err := os.WriteFile(lf+".probefile", []byte(*file), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return strings.TrimSpace(landBash(t, []string{"probe_of"}, `probe_of "$1"`, nil, lf))
 	}
-	real := "signoff: probe: linux github.com/x/p/internal/kb,github.com/x/p/internal/audit github.com/x/p/internal/mcpserver\n"
+	real := "linux github.com/x/p/internal/kb,github.com/x/p/internal/audit github.com/x/p/internal/mcpserver\n"
 	for _, c := range []struct{ name, line, want string }{
-		{"linux", real, "linux github.com/x/p/internal/kb,github.com/x/p/internal/audit github.com/x/p/internal/mcpserver"},
-		{"windows, no race list", "signoff: probe: windows github.com/x/p/internal/kb -\n", "windows github.com/x/p/internal/kb -"},
-		{"only a race list", "signoff: probe: linux - github.com/x/p/internal/kb\n", "linux - github.com/x/p/internal/kb"},
-		{"CRLF", "signoff: probe: linux a/b -\r\n", "linux a/b -"},
-		{"nothing to run", "signoff: probe: linux - -\n", ""},
-		{"an option as a package", "signoff: probe: linux -run=X -\n", ""},
-		{"an option after a comma", "signoff: probe: linux a/b,-bench=. -\n", ""},
-		{"an option in the race list", "signoff: probe: linux a/b -exec=sh\n", ""},
-		{"an extra word", "signoff: probe: linux a/b - -x\n", ""},
-		{"a missing word", "signoff: probe: linux a/b\n", ""},
-		{"an unknown platform", "signoff: probe: darwin a/b -\n", ""},
-		{"a command substitution", "signoff: probe: linux $(id) -\n", ""},
-		{"a glob", "signoff: probe: linux a/*,b -\n", ""},
-		{"a semicolon", "signoff: probe: linux a;b -\n", ""},
-		{"an empty package between commas", "signoff: probe: linux a,,b -\n", ""},
-		{"nothing", "signoff: make failed\n", ""},
+		{"linux", real, strings.TrimSpace(real)},
+		{"windows, no race list", "windows github.com/x/p/internal/kb -\n", "windows github.com/x/p/internal/kb -"},
+		{"only a race list", "linux - github.com/x/p/internal/kb\n", "linux - github.com/x/p/internal/kb"},
+		{"CRLF", "linux a/b -\r\n", "linux a/b -"},
+		{"no newline", "linux a/b -", "linux a/b -"},
+		{"empty: the signoff confirmed nothing", "\n", ""},
+		{"nothing to run", "linux - -\n", ""},
+		{"an option as a package", "linux -run=X -\n", ""},
+		{"an option after a comma", "linux a/b,-bench=. -\n", ""},
+		{"an option in the race list", "linux a/b -exec=sh\n", ""},
+		{"an extra word", "linux a/b - -x\n", ""},
+		{"a missing word", "linux a/b\n", ""},
+		{"an unknown platform", "darwin a/b -\n", ""},
+		{"a command substitution", "linux $(id) -\n", ""},
+		{"a glob", "linux a/*,b -\n", ""},
+		{"a semicolon", "linux a;b -\n", ""},
+		{"an empty package between commas", "linux a,,b -\n", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := probeOf(t, "FAIL\tgithub.com/x/p/internal/kb\t0.1s\n"+c.line+"signoff: make gate failed (exit 2): nothing pushed, nothing posted\n"); got != c.want {
+			if got := probeOf(t, "FAIL\tgithub.com/x/p/internal/kb\t0.1s\n", &c.line); got != c.want {
 				t.Errorf("probe_of = %q, want %q", got, c.want)
 			}
 		})
 	}
-	t.Run("the last line wins: the signoff prints its own after the retry", func(t *testing.T) {
-		got := probeOf(t, "signoff: probe: linux evil/pkg -\n--- FAIL: TestA\nsignoff: probe: windows a/b -x\n"+real)
-		if want := "linux github.com/x/p/internal/kb,github.com/x/p/internal/audit github.com/x/p/internal/mcpserver"; got != want {
-			t.Errorf("probe_of = %q, want %q", got, want)
+	t.Run("a well-formed line in the log with no file is no probe: full gates", func(t *testing.T) {
+		forged := "panic: boom\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\nsignoff: probe: linux github.com/x/p/internal/kb -\n" +
+			"signoff: make gate failed (exit 2): nothing pushed, nothing posted\n"
+		if got := probeOf(t, forged, nil); got != "" {
+			t.Errorf("probe_of = %q, want none", got)
 		}
 	})
-	t.Run("a forged line after the real one is no probe at all", func(t *testing.T) {
-		if got := probeOf(t, real+"signoff: probe: linux $(id) -\n"); got != "" {
-			t.Errorf("probe_of = %q, want none (full gates)", got)
+	t.Run("a forged line in the log never wins over the file, empty or not", func(t *testing.T) {
+		forged := "signoff: probe: linux evil/pkg -\n"
+		empty := ""
+		if got := probeOf(t, forged, &empty); got != "" {
+			t.Errorf("empty file: probe_of = %q, want none", got)
+		}
+		if got := probeOf(t, forged, &real); got != strings.TrimSpace(real) {
+			t.Errorf("probe_of = %q, want the file's words", got)
 		}
 	})
-	t.Run("land.sh reads the log of the last gate only, through probe_of", func(t *testing.T) {
+	t.Run("only the last line of the file counts, as the last signoff line did", func(t *testing.T) {
+		two := "linux evil/pkg -\n" + real
+		if got := probeOf(t, "", &two); got != strings.TrimSpace(real) {
+			t.Errorf("probe_of = %q", got)
+		}
+	})
+	t.Run("land.sh reads the file of the last gate only, through probe_of", func(t *testing.T) {
 		script := readFile(t, repoRoot(t), "scripts/land.sh")
 		if !strings.Contains(script, `if [ -e "$glog.2" ]; then probe=$(probe_of "$glog.2"); else probe=$(probe_of "$glog"); fi`) {
-			t.Error("the bisection must take its probe from probe_of over the last gate's log")
+			t.Error("the bisection must take its probe from probe_of over the last gate")
 		}
-		if strings.Contains(script, "sed -n 's/^signoff: probe: //p'") && !strings.Contains(script, "probe_of() {") {
-			t.Error("an unchecked probe line reaches signoff.sh --probe")
+		if strings.Contains(script, "signoff: probe: //p") {
+			t.Error("the probe must not be read from the gate log")
+		}
+		if !strings.Contains(script, `SIGNOFF_PROBE_FILE="$pf" "$here/signoff.sh")`) {
+			t.Error("each gate hands the signoff its own probe file")
 		}
 	})
+}
+
+// Every name a title, a body or a commit message gets is read from the gate log, the change's own
+// output: safe_names keeps [A-Za-z0-9_.-] (and a panic's suffix), and defuses what that charset can
+// still link: a `www.` (GitHub links `www.example.org`) and a run of 7 to 40 lowercase hex digits (a
+// commit link). Each forged shape must come out inert in the names failing() returns, in the title
+// issue_title builds and in the body flaky_issue writes.
+func TestLanderNamesAreInertInTitleAndBody(t *testing.T) {
+	inert := regexp.MustCompile(`^[A-Za-z0-9_.-]+( \(panic(: [A-Za-z0-9 _:-]*)?\))?$`)
+	check := func(t *testing.T, where, got string) {
+		t.Helper()
+		for _, l := range strings.Split(strings.TrimSpace(got), "\n") {
+			if l == "" {
+				continue
+			}
+			if !inert.MatchString(l) || strings.Contains(strings.ToLower(l), "www.") {
+				t.Errorf("%s: %q is not inert", where, l)
+			}
+		}
+	}
+	forged := []struct{ name, log, want string }{
+		{"an image", " FAIL  ![i](http://example.com/i.png) > t\n", "ihttp__example.com_i.png"},
+		{"a link", " FAIL  [x](http://example.com) > t\n", "xhttp__example.com"},
+		{"a mention", " FAIL  @user > t\n", "user"},
+		{"a mention of a team", " FAIL  @org/team > t\n", "org_team"},
+		{"an issue reference", " FAIL  #123 > t\n", "123"},
+		{"a www autolink", " FAIL  www.example.org > t\n", "www_example.org"},
+		{"a www autolink in capitals", " FAIL  WWW.Example.ORG > t\n", "WWW_Example.ORG"},
+		{"a www autolink after an underscore", " FAIL  a_www.example.org > t\n", "a_www_example.org"},
+		{"a commit hash", " FAIL  deadbeef1 > t\n", "deadbeef1_"},
+		{"a full commit hash", " FAIL  pkg." + strings.Repeat("a1", 20) + " > t\n", "pkg." + strings.Repeat("a1", 20) + "_"},
+		{"a long hex run is no hash", " FAIL  " + strings.Repeat("a", 41) + " > t\n", strings.Repeat("a", 41)},
+		{"a playwright name", " ✘ 1 www.example.org › x\n", "www_example.org"},
+		{"a playwright mention", " ✘ 2 @user rest\n", "user"},
+		{"a confirmed name", "signoff: confirmed on a targeted retry: www.example.org\n", "www_example.org"},
+		{"an e2e scenario", "E2E FAILED: www.example.org: [FAIL] x\n", "e2e.www_example.org"},
+		{"a panic's package", "panic: see www.example.org\nFAIL\twww.example.org\t0.1s\n", "wwwexampleorg (panic: see wwwexampleorg)"},
+		{"a panic's test", "--- FAIL: Test.www.example.org (0.00s)\npanic: x\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\n", "kb.Test (panic)"},
+	}
+	for _, c := range forged {
+		t.Run(c.name, func(t *testing.T) {
+			got := failingOf(t, c.log)
+			if got != c.want {
+				t.Errorf("failing() = %q, want %q", got, c.want)
+			}
+			check(t, "failing", got)
+		})
+	}
+	// The title is built from the same names, whatever reaches it (a name passed in raw too).
+	raw := "![i](http://example.com/i.png)\n[x](http://example.com)\n@user\nwww.example.org\ndeadbeef12\n   \n"
+	title := strings.TrimSpace(landBash(t, []string{"safe_names", "issue_title"}, `issue_title "$1" "$2"`, nil, raw, "failed"))
+	if want := "flaky: ihttp__example.com_i.png xhttp__example.com user www_example.org deadbeef12_ failed"; title != want {
+		t.Errorf("title = %q, want %q", title, want)
+	}
+	// The body of a green gate's issue (flaky_issue) and its title, as gh receives them.
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$OUT\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "args")
+	lf := writeLog(t, "signoff: flaky: www.example.org deadbeef1234 kb.TestOk failed and passed on a targeted retry\n"+
+		"signoff: flaky: @user.x failed and passed on a targeted retry\n")
+	landBash(t, []string{"safe_names", "issue_title", "issue_flaky", "flaky_issue"},
+		`repo=up/proj; branch=train/x; log() { :; }; flaky_issue "$1" "$2"`,
+		[]string{"PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH"), "OUT=" + out}, lf, "failed")
+	args := strings.Split(strings.TrimSpace(readFile(t, dir, "args")), "\n")
+	joined := strings.Join(args, "\n")
+	if !strings.Contains(joined, "--title\nflaky: www_example.org deadbeef1234_ kb.TestOk failed") ||
+		!strings.Contains(joined, "failed on www_example.org deadbeef1234_ kb.TestOk ") {
+		t.Errorf("title and body name the inert forms:\n%s", joined)
+	}
+	if strings.Contains(joined, "@") || strings.Contains(strings.ToLower(joined), "www.") {
+		t.Errorf("a forged name reached the issue:\n%s", joined)
+	}
 }

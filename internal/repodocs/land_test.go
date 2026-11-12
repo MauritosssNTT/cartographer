@@ -81,6 +81,16 @@ case "$*" in web-perf*)
   if [ -e WEBPERF75 ] && [ ! -e "$FAKE_STATE.wp75" ]; then touch "$FAKE_STATE.wp75"; exit 75; fi
   [ -e WEBPERF ] && exit 2; exit 0 ;; esac
 [ -e BAD ] && exit 2
+# A test that prints a well-formed probe line while nothing was confirmed (a panic, no named Go
+# test): FORGEPROBE, every gate. The lander must bisect with full gates, not with that line.
+if [ -e FORGEPROBE ]; then
+  printf 'panic: boom\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\nsignoff: probe: linux github.com/x/p/internal/kb -\n'; exit 2
+fi
+# Names a test forged to become a mention or a link in the public issue (FORGEDNAME, the first gate only).
+if [ -e FORGEDNAME ] && [ ! -e "$FAKE_STATE.forgedname" ]; then
+  touch "$FAKE_STATE.forgedname"
+  printf ' FAIL  www.example.org > t\n ✘ 1 @user x\n FAIL  ![i](http://example.com/i.png) > t\n'; exit 2
+fi
 # Another PR merges while the first gate runs (FAKE_MOVE_MAIN): main moves under the train.
 if [ -n "${FAKE_MOVE_MAIN:-}" ] && [ ! -e "$FAKE_STATE.moved" ]; then
   touch "$FAKE_STATE.moved"
@@ -504,6 +514,50 @@ func TestLanderBisectsWithTheConfirmedTestsOnly(t *testing.T) {
 	// The signoff's own retry, then one probe per bisection step (prefixes [a b] and [a]).
 	if n := strings.Count(mk, "test-rerun RERUN_PKGS=github.com/x/p/internal/kb"); n != 3 {
 		t.Errorf("the retry and two probes: %d\n%s", n, mk)
+	}
+}
+
+// A well-formed `signoff: probe:` line in the log is the change's own output when the real signoff
+// printed none (a panic here: no Go test is named, nothing is confirmed): the bisection must run full
+// gates and still reject the right change, not follow that line.
+func TestLanderIgnoresAProbeLineForgedInTheGateLog(t *testing.T) {
+	e := newLandEnv(t)
+	e.queue("a", "fix(kb): a\n", "2026-01-01T10:00:00Z", map[string]string{"a2.txt": "a\n"})
+	e.queue("b", "fix(kb): b\n", "2026-01-01T11:00:00Z", map[string]string{"FORGEPROBE": "x\n"})
+	e.queue("c", "fix(kb): c\n", "2026-01-01T12:00:00Z", map[string]string{"c.txt": "c\n"})
+	out, ok := e.land()
+	if !ok {
+		t.Fatalf("land failed\n%s", out)
+	}
+	if got := strings.Join(e.mainSubjects(), " | "); got != "fix(kb): a | fix(kb): c" {
+		t.Fatalf("main holds %q, want a, then c\n%s", got, out)
+	}
+	if e.refs("failed/") != "b" {
+		t.Fatalf("b must be rejected: failed=%q\n%s", e.refs("failed/"), out)
+	}
+	if strings.Contains(out, "bisecting with the confirmed tests only") {
+		t.Errorf("a forged probe line steered the bisection\n%s", out)
+	}
+	if mk := e.makeLog(); strings.Contains(mk, "test-rerun") {
+		t.Errorf("no probe may run:\n%s", mk)
+	}
+}
+
+// Names read from the gate log are the change's own output: what reaches the title of the issue is
+// inert (no mention, no link), whatever the log forged.
+func TestLanderIssueNamesAreInert(t *testing.T) {
+	e := newLandEnv(t)
+	e.queue("f", "fix(kb): f\n", "2026-01-01T10:00:00Z", map[string]string{"FORGEDNAME": "x\n"})
+	out, ok := e.land()
+	if !ok {
+		t.Fatalf("land failed\n%s", out)
+	}
+	gh := e.log()
+	if want := "--title flaky: ihttp__example.com_i.png user www_example.org failed once and passed on a re-run"; !strings.Contains(gh, want) {
+		t.Errorf("the issue names only inert names, want %q:\n%s", want, gh)
+	}
+	if strings.Contains(gh, "@") || strings.Contains(strings.ToLower(gh), "www.") || strings.Contains(gh, "](") {
+		t.Errorf("a forged name reached the issue:\n%s", gh)
 	}
 }
 
@@ -1101,14 +1155,7 @@ func (e *landEnv) makeLog() string {
 // of a rejection names the confirmed tests first, each once, then the rest (#1794).
 func TestLanderNamesTheConfirmedTestsFirstInTheRejection(t *testing.T) {
 	needBash(t)
-	root := repoRoot(t)
-	script := readFile(t, root, "scripts/land.sh")
-	start := strings.Index(script, "\nfailing() {")
-	end := strings.Index(script[start+1:], "\n}\n")
-	if start < 0 || end < 0 {
-		t.Fatal("failing() not found in scripts/land.sh")
-	}
-	fn := script[start : start+1+end+3]
+	fn := landFns(t, "safe_names", "failing")
 	logFile := filepath.Join(t.TempDir(), "gate.log")
 	body := " FAIL  src/test/releases.test.tsx > shows the releases\n" +
 		"--- FAIL: TestLinuxOnly (0.01s)\n" +
@@ -1122,7 +1169,7 @@ func TestLanderNamesTheConfirmedTestsFirstInTheRejection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failing: %v\n%s", err, out)
 	}
-	want := "plugin.TestResolveProviderDocumentsInstructions plugin.TestOther TestLinuxOnly src/test/releases.test.tsx"
+	want := "plugin.TestResolveProviderDocumentsInstructions plugin.TestOther TestLinuxOnly src_test_releases.test.tsx"
 	if got := strings.TrimSpace(string(out)); got != want {
 		t.Errorf("failing() = %q, want %q", got, want)
 	}
