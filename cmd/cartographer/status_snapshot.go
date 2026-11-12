@@ -236,8 +236,13 @@ type statusSnapshot struct {
 	KBs       []string `json:"kbs,omitempty"`
 	// Issues are the artifacts the server left out of the catalogue and why
 	// (sync_pull issues, #1775); they are not drift: the artifact stays out.
-	Issues    []string         `json:"issues,omitempty"`
-	Providers []providerStatus `json:"providers"`
+	Issues []string `json:"issues,omitempty"`
+	// CatalogueWarnings are manifest issues about an artifact that IS in the
+	// catalogue and that status does not show as held: an agent whose
+	// frontmatter is not valid YAML but whose content is approved or installed.
+	// The text is the manifest issue, raw.
+	CatalogueWarnings []string         `json:"catalogue_warnings,omitempty"`
+	Providers         []providerStatus `json:"providers"`
 	// Plugins lists the configured plugins (additive, schema unchanged); absent
 	// when none is configured.
 	Plugins   []pluginStatus   `json:"plugins,omitempty"`
@@ -481,7 +486,7 @@ func snapshotForConfig(dir string, cfg *clientconfig.Config, includeService bool
 		}
 		return s
 	}
-	s.Issues = statusIssues(manifests)
+	s.Issues, s.CatalogueWarnings = statusIssues(manifests, nil)
 	// The count keeps its meaning: distinct artifacts per provider, summed. An
 	// artifact in two workspaces of one provider is one artifact.
 	for _, name := range connectedProviders {
@@ -578,6 +583,8 @@ func snapshotForConfig(dir string, cfg *clientconfig.Config, includeService bool
 		tagProjectScope(p.Updated, provProjections[p.Name], manifests)
 		s.State = "drift"
 	}
+	// Now that the providers say which agents they show as held.
+	s.Issues, s.CatalogueWarnings = statusIssues(manifests, s.Providers)
 	if s.Server != "" && s.Client != "" && s.Client != "dev" && s.Server != "dev" && s.Client != s.Server && s.State == "in_sync" {
 		s.State = "version_skew"
 	}
@@ -792,31 +799,52 @@ func heldAgentReason(a contract.Artifact) string {
 	return ""
 }
 
-// statusIssues is manifestIssues without the lines about an agent the run holds
-// for approval (heldAgentReason): that agent is in the catalogue, listed with
-// its reason, so naming it again as left out would be false. sync keeps the
-// line, which is about the content and true there.
-func statusIssues(manifests map[string]contract.Manifest) []string {
-	var prefixes []string
+// statusIssues splits the manifest issues for status. An issue about an agent
+// the snapshot shows as held (HeldReason) is dropped: the agent is listed with
+// its reason, so naming it again would repeat it. An issue about an agent that
+// is in a manifest but not shown held (approved, or installed and in sync, or
+// carried by no provider's diff) goes to inCatalogue: the agent is in the
+// catalogue, so "not in the catalogue" would be false, but the broken
+// frontmatter must not vanish from status. Every other issue is leftOut. sync
+// keeps every line, which is about the content and true there.
+func statusIssues(manifests map[string]contract.Manifest, shown []providerStatus) (leftOut, inCatalogue []string) {
+	var held []string
+	for _, p := range shown {
+		for _, a := range append(append([]statusArtifact(nil), p.Added...), p.Updated...) {
+			if a.Kind == "agent" && a.HeldReason != "" && strings.HasPrefix(a.Source, "kb:") {
+				held = append(held, contract.AgentFrontmatterIssuePrefix(strings.TrimPrefix(a.Source, "kb:"), a.Name))
+			}
+		}
+	}
+	var listed []string
 	for _, m := range manifests {
 		for _, a := range m.Artifacts {
 			if a.Kind == "agent" && strings.HasPrefix(a.Source, "kb:") {
-				prefixes = append(prefixes, contract.AgentFrontmatterIssuePrefix(strings.TrimPrefix(a.Source, "kb:"), a.Name))
+				listed = append(listed, contract.AgentFrontmatterIssuePrefix(strings.TrimPrefix(a.Source, "kb:"), a.Name))
 			}
 		}
 	}
-	kept := make(map[string]contract.Manifest, len(manifests))
+	has := func(prefixes []string, text string) bool {
+		return slices.ContainsFunc(prefixes, func(p string) bool { return strings.HasPrefix(text, p) })
+	}
+	out := make(map[string]contract.Manifest, len(manifests))
+	in := make(map[string]contract.Manifest, len(manifests))
 	for k, m := range manifests {
-		var keep []contract.KBIssue
+		var outIssues, inIssues []contract.KBIssue
 		for _, is := range m.KBIssues {
-			if !slices.ContainsFunc(prefixes, func(p string) bool { return strings.HasPrefix(is.Text, p) }) {
-				keep = append(keep, is)
+			switch {
+			case has(held, is.Text):
+			case has(listed, is.Text):
+				inIssues = append(inIssues, is)
+			default:
+				outIssues = append(outIssues, is)
 			}
 		}
-		m.KBIssues = keep
-		kept[k] = m
+		mo, mi := m, m
+		mo.KBIssues, mi.KBIssues = outIssues, inIssues
+		out[k], in[k] = mo, mi
 	}
-	return manifestIssues(kept)
+	return manifestIssues(out), manifestIssues(in)
 }
 
 // heldArtifacts are the artifacts of m that wait for an approval without being

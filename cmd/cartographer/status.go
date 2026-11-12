@@ -235,6 +235,11 @@ func renderStatus(output string, s statusSnapshot, code int) int {
 	for _, is := range s.Issues {
 		fmt.Printf("not in the catalogue: %s\n", escapeControl(is))
 	}
+	// An artifact that is in the catalogue and not shown as held, with a problem
+	// in its content: never "not in the catalogue".
+	for _, w := range s.CatalogueWarnings {
+		fmt.Printf("in the catalogue, with a problem: %s\n", escapeControl(w))
+	}
 
 	// D262: informational, never a drift — the sync left the keys verbatim.
 	if n := len(s.UnresolvedPlaceholders); n > 0 {
