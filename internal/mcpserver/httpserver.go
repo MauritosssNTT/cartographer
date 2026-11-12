@@ -359,9 +359,10 @@ func (m *MultiKBServer) EnableWeb(static http.Handler) {
 	m.web = &webMount{Static: static}
 }
 
-// SetAtlasURL records the browser address of the Atlas (webui.URL of the
-// listen address), which kb_status reports as ui_url (#1945). Call it before
-// serving; it is reported only while the bundle is mounted.
+// SetAtlasURL records the browser address of the Atlas (webui.LoopbackURL of
+// the listen address, "" for a specific non-loopback bind), which kb_status
+// reports as ui_url (#1945). Call it before serving; it is reported only while
+// the bundle is mounted.
 func (m *MultiKBServer) SetAtlasURL(u string) { m.atlasURL = u }
 
 // servedAtlasURL is the Atlas address, "" unless EnableWeb mounted a bundle.

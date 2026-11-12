@@ -129,18 +129,10 @@ A KB syncs exactly when it has a remote, and every write is one commit: neither 
    `~/src`, `~/code`, `~/projects`) — then `cartographer sync`. A key missing
    from the KB's `paths.yaml` is fixed in the KB, not on the client: declare it there with a
    `~/`-anchored default so every machine resolves it with no configuration.
-
-## The Atlas
-
-The Atlas is the read-only browser view of the KBs: the graph, each concept with its links, the
-lint findings. When the user asks to see a KB, give them `ui_url` from `kb_status`: the link opens
-that KB (by default `http://127.0.0.1:39273/ui/?kb=<name>`). On the machine itself,
-`cartographer service status` prints the same address on its `ui:` line. It is the address the
-server listens on: for a server on another machine or behind a proxy, give the address the user
-reaches the server by, with the same `/ui/?kb=<name>`. No `ui_url` means this
-server serves no Atlas: it runs over stdio, or `CARTOGRAPHER_WEB_ENABLED=false` (`web.enabled`)
-turned it off, or the service is stopped (`cartographer service start`). Never tell the user
-there is no graphical view before checking.
+9. Asked to see a KB, give the Atlas link: `ui_url` in `kb_status`, or the `ui:` line of
+   `cartographer service status` on the server host. No `ui_url` means this server shows none:
+   stdio, `CARTOGRAPHER_WEB_ENABLED=false`, a stopped service, or a bind to a specific
+   non-loopback address (the server hides it; give the address users reach it by, `/ui/?kb=<name>`).
 
 ## Upgrade
 

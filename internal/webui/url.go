@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"strings"
 )
 
 // URL is the browser address of the Atlas served on a server http address
@@ -17,10 +18,37 @@ func URL(addr string) string {
 	if err != nil {
 		return ""
 	}
-	if host == "" || host == "0.0.0.0" || host == "::" {
+	if wildcardHost(host) {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("http://%s%s", net.JoinHostPort(host, port), MountPath)
+}
+
+// LoopbackURL is URL for the one address kb_status may report (#1945): a
+// loopback bind (127.0.0.0/8, ::1, localhost) or a wildcard one, which only the
+// machine itself reaches as 127.0.0.1. A bind to a specific other address is
+// "": naming it would tell every authenticated caller where the server listens,
+// and the operator, not the server, knows the address users reach it by.
+func LoopbackURL(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return ""
+	}
+	if !wildcardHost(host) && !strings.EqualFold(host, "localhost") {
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return ""
+		}
+	}
+	return URL(addr)
+}
+
+// wildcardHost reports a bind to every interface: no host, 0.0.0.0, ::.
+func wildcardHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }
 
 // KBURL is the Atlas URL that opens one KB (the UI's ?kb= view state). The

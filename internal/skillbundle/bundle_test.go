@@ -160,17 +160,18 @@ func TestOpsSkillPointsToTheAtlas(t *testing.T) {
 		t.Fatalf("read cartographer-ops SKILL.md: %v", err)
 	}
 	text := string(body)
-	i := strings.Index(text, "## The Atlas")
-	if i < 0 {
-		t.Fatal("the ops skill has no Atlas section (#1945)")
+	if strings.Contains(text, "## The Atlas") {
+		t.Error("the Atlas is a step of the diagnosis playbook, not a section of its own (#1945)")
 	}
-	section := text[i:]
-	if j := strings.Index(section[1:], "\n## "); j >= 0 {
-		section = section[:j+1]
+	i := strings.Index(text, "## Diagnosis playbook")
+	j := strings.Index(text, "## Upgrade")
+	if i < 0 || j < i {
+		t.Fatal("the ops skill lost its diagnosis playbook")
 	}
-	for _, want := range []string{"`ui_url`", "`kb_status`", "stdio", "CARTOGRAPHER_WEB_ENABLED=false", "service status", "stopped"} {
+	section := text[i:j]
+	for _, want := range []string{"`ui_url`", "`kb_status`", "stdio", "CARTOGRAPHER_WEB_ENABLED=false", "service status", "stopped", "non-loopback"} {
 		if !strings.Contains(section, want) {
-			t.Errorf("the Atlas section lost %q (#1945)", want)
+			t.Errorf("the Atlas step lost %q (#1945)", want)
 		}
 	}
 }

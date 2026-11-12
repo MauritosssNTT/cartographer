@@ -184,7 +184,7 @@ Or open the Atlas in a browser — `cartographer service status` prints its
 address on the `ui:` line (by default `http://127.0.0.1:39273/ui/`): the graph
 of the KB, each concept with its links, and the lint findings, read-only. You
 can also ask the agent: `kb_status` returns the link to the KB in the Atlas as
-`ui_url` whenever the service serves it.
+`ui_url` whenever the service serves it on a loopback address (the default).
 
 Nothing is opaque: the KB is the files, git is the history, and any write the
 agent made can be reviewed or reverted with ordinary git.
