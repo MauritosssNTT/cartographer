@@ -79,6 +79,7 @@ func (l *Log) EventsAfter(cursor string, limit int) (events []Entry, gap bool, e
 	if limit <= 0 {
 		return nil, false, nil
 	}
+	changed := errors.New("audit: the log kept rotating while it was read")
 	for attempt := 0; attempt < 3; attempt++ {
 		snap, err := l.snapshotAfter()
 		if err != nil {
@@ -86,7 +87,8 @@ func (l *Log) EventsAfter(cursor string, limit int) (events []Entry, gap bool, e
 		}
 		active, err := readPrefix(l.path, snap.size)
 		if errors.Is(err, errSegmentChanged) {
-			continue // the active file was replaced by a rotation meanwhile
+			changed = err // the active file was replaced by a rotation meanwhile
+			continue
 		}
 		if err != nil {
 			return nil, false, err
@@ -100,7 +102,9 @@ func (l *Log) EventsAfter(cursor string, limit int) (events []Entry, gap bool, e
 		}
 		return events, gap, err
 	}
-	return nil, false, errors.New("audit: the log kept rotating while it was read")
+	// Still changed after the retries: a broken active file rather than a
+	// rotation, and the error names it.
+	return nil, false, changed
 }
 
 var errSegmentChanged = errors.New("audit: segment changed during read")
@@ -216,7 +220,7 @@ func readPrefix(path string, size int64) ([]Entry, error) {
 	// An append writes whole lines under the mutex, so the snapshot's size
 	// ends a line: a cut elsewhere is another file (a rotation replaced it).
 	if int64(len(data)) < size || data[len(data)-1] != '\n' {
-		return nil, errSegmentChanged
+		return nil, fmt.Errorf("%w: %s does not end a line at the snapshot", errSegmentChanged, path)
 	}
 	var out []Entry
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
@@ -225,7 +229,7 @@ func readPrefix(path string, size int64) ([]Entry, error) {
 		}
 		var e Entry
 		if err := json.Unmarshal(line, &e); err != nil {
-			return nil, errSegmentChanged
+			return nil, fmt.Errorf("%w: parse %s: %v", errSegmentChanged, path, err)
 		}
 		out = append(out, e)
 	}

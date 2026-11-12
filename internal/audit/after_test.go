@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,10 +216,10 @@ func TestReadPrefix_ACutLineIsAChangedSegment(t *testing.T) {
 	if _, err := readPrefix(path, fi.Size()); err != nil {
 		t.Fatalf("whole lines: %v", err)
 	}
-	if _, err := readPrefix(path, fi.Size()-5); err != errSegmentChanged {
+	if _, err := readPrefix(path, fi.Size()-5); !errors.Is(err, errSegmentChanged) {
 		t.Fatalf("a cut line: %v", err)
 	}
-	if _, err := readPrefix(path, fi.Size()+100); err != errSegmentChanged {
+	if _, err := readPrefix(path, fi.Size()+100); !errors.Is(err, errSegmentChanged) {
 		t.Fatalf("a shorter file: %v", err)
 	}
 }
@@ -244,5 +245,23 @@ func TestEventsAfter_FirstHashOfADeletedSegment(t *testing.T) {
 	es, gap, err := l.EventsAfter(gone.FirstHash, 1)
 	if err != nil || !gap || len(es) != 1 || es[0].PrevHash != gone.LastHash {
 		t.Fatalf("got %+v, gap %v, %v", es, gap, err)
+	}
+}
+
+// A broken active file (no rotation explains it) fails with an error naming
+// the file once the retries run out.
+func TestEventsAfter_BrokenActiveFileIsNamed(t *testing.T) {
+	l, path := tempLog(t)
+	if err := appendOne(l, "tool"); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o640)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("{not json}\n")
+	f.Close()
+	if _, _, err := l.EventsAfter("", 10); err == nil || !strings.Contains(err.Error(), "parse "+path) {
+		t.Fatalf("got %v", err)
 	}
 }
