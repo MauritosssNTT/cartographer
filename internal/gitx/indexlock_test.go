@@ -302,3 +302,83 @@ func TestRemoveStaleIndexLock_LeavesTheLockWhenDotGitIsBogus(t *testing.T) {
 		t.Fatalf("the enclosing repository's lock was removed: %v", err)
 	}
 }
+
+// stopOnConflict leaves a rebase stopped on a conflict in dir (a clone from
+// remoteAhead, or a linked worktree of one), the state a rebase that replayed
+// commits and then failed leaves behind.
+func stopOnConflict(t *testing.T, dir, tag string) {
+	t.Helper()
+	ident := []string{"GIT_AUTHOR_NAME=User", "GIT_AUTHOR_EMAIL=user@example.com", "GIT_COMMITTER_NAME=User", "GIT_COMMITTER_EMAIL=user@example.com"}
+	git := func(args ...string) string {
+		t.Helper()
+		out, err := runGitEnv(dir, ident, args...)
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return out
+	}
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, "seed.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git("commit", "-q", "-am", content)
+	}
+	orig := strings.TrimSpace(git("rev-parse", "--abbrev-ref", "HEAD"))
+	write("left\n")
+	git("checkout", "-q", "-b", "other-"+tag, "origin/main")
+	write("right\n")
+	git("checkout", "-q", orig)
+	if out, err := runGitEnv(dir, ident, "rebase", "other-"+tag); err == nil {
+		t.Fatalf("the rebase did not stop on a conflict:\n%s", out)
+	}
+	if _, ok := RebaseInProgress(dir); !ok {
+		t.Fatal("no rebase state after a conflicting rebase")
+	}
+}
+
+// When git replayed commits and then met the lock, `rebase --abort` fails on the
+// lock too: the error must say a rebase is left and how to end it.
+func TestAbortRebaseIfStarted_NamesARebaseThatCannotBeAborted(t *testing.T) {
+	dir := remoteAhead(t)
+	stopOnConflict(t, dir, "a")
+	lock := filepath.Join(dir, ".git", "index.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hint := abortRebaseIfStarted(dir)
+	if !strings.Contains(hint, "rebase --abort") || !strings.Contains(hint, dir) {
+		t.Fatalf("the hint does not say how to end the rebase: %q", hint)
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	if hint := abortRebaseIfStarted(dir); hint != "" {
+		t.Errorf("the abort succeeded but the hint is %q", hint)
+	}
+	if _, ok := RebaseInProgress(dir); ok {
+		t.Error("the rebase is still in progress after the abort")
+	}
+}
+
+// In a linked worktree `.git` is a file: the rebase state lives in the worktree's
+// own git dir, and RebaseInProgress / RebaseStateDir must find it there.
+func TestRebaseInProgress_LinkedWorktree(t *testing.T) {
+	main := remoteAhead(t)
+	wt := filepath.Join(t.TempDir(), "wt")
+	ident := []string{"GIT_AUTHOR_NAME=User", "GIT_AUTHOR_EMAIL=user@example.com", "GIT_COMMITTER_NAME=User", "GIT_COMMITTER_EMAIL=user@example.com"}
+	if out, err := runGitEnv(main, ident, "worktree", "add", "-q", "-b", "wt-branch", wt, "main"); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	if _, ok := RebaseInProgress(wt); ok {
+		t.Fatal("a fresh worktree reports a rebase")
+	}
+	stopOnConflict(t, wt, "wt")
+	if _, ok := RebaseInProgress(main); ok {
+		t.Error("the main clone reports the worktree's rebase")
+	}
+	dir := RebaseStateDir(wt)
+	if dir == "" || !strings.HasPrefix(filepath.Base(dir), "rebase-") {
+		t.Errorf("RebaseStateDir = %q", dir)
+	}
+}

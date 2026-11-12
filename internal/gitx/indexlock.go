@@ -32,10 +32,18 @@ func indexLockHint(dir, out string) string {
 // creating any rebase state ("could not detach HEAD"): then there is nothing to
 // abort, and `rebase --abort` would only fail on the same lock. Only a state
 // directory actually present is aborted, so a refusal never runs it blindly.
-func abortRebaseIfStarted(dir string) {
-	if _, ok := RebaseInProgress(dir); ok {
-		_, _ = runGit(dir, "rebase", "--abort")
+// When git replayed commits and then hit the lock, the abort fails on the lock
+// too: the returned text, to append to the lock hint, says the rebase is still in
+// progress and how to end it once the lock is gone ("" when none remains).
+func abortRebaseIfStarted(dir string) string {
+	if _, ok := RebaseInProgress(dir); !ok {
+		return ""
 	}
+	_, _ = runGit(dir, "rebase", "--abort")
+	if _, ok := RebaseInProgress(dir); !ok {
+		return ""
+	}
+	return fmt.Sprintf("\ncartographer: a rebase is also left in progress in %s: after removing the lock, run `git -C %s rebase --abort`", dir, dir)
 }
 
 // RemoveStaleIndexLock removes the index.lock a crash, a power loss or a kill left

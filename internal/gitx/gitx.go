@@ -1001,7 +1001,7 @@ func PullRebaseAutostash(dir, remote, branch string, env ...string) error {
 	// A leftover index.lock is not a conflict, though git words it "error: could
 	// not detach HEAD": name the lock before the conflict markers are read.
 	if hint := indexLockHint(dir, out); hint != "" {
-		abortRebaseIfStarted(dir)
+		hint += abortRebaseIfStarted(dir)
 		return fmt.Errorf("git pull --rebase --autostash %s %s: %w: %s%s", RedactRemoteURL(remote), branch, redactedErr(err, remote), RedactRemoteText(out, remote), hint)
 	}
 	// Detect rebase conflict: output contains "CONFLICT" or "rebase" stall markers.
@@ -1198,7 +1198,7 @@ func RebaseOntoAutostash(dir, remote, branch string, env ...string) error {
 		return nil
 	}
 	if hint := indexLockHint(dir, out); hint != "" {
-		abortRebaseIfStarted(dir)
+		hint += abortRebaseIfStarted(dir)
 		return fmt.Errorf("git rebase --autostash %s: %w: %s%s", target, err, out, hint)
 	}
 	if strings.Contains(out, "CONFLICT") || strings.Contains(out, "could not apply") || strings.Contains(out, "error: could not") {
@@ -1519,13 +1519,29 @@ const (
 	RebaseStateOrphanAutostash = "orphan-autostash"
 )
 
+// gitStatePath is where git keeps the per-worktree state file or directory name
+// for the repository at dir. In a linked worktree `.git` is a file, so the path
+// comes from git itself (rev-parse --git-path); when git cannot say (dir is not a
+// repository) it falls back to <dir>/.git/<name>.
+func gitStatePath(dir, name string) string {
+	if out, err := runGit(dir, "rev-parse", "--git-path", name); err == nil {
+		if p := strings.TrimSpace(out); p != "" {
+			if !filepath.IsAbs(p) {
+				p = filepath.Join(dir, p)
+			}
+			return p
+		}
+	}
+	return filepath.Join(dir, ".git", name)
+}
+
 // RebaseInProgress reports whether dir has a rebase state directory and what kind
 // it is. A caller must not run git in the worktree while this returns true: the
 // point is to refuse with an actionable message instead of letting git fail with
 // one that names no way out.
 func RebaseInProgress(dir string) (kind string, ok bool) {
 	for _, name := range []string{"rebase-merge", "rebase-apply"} {
-		d := filepath.Join(dir, ".git", name)
+		d := gitStatePath(dir, name)
 		if _, err := os.Stat(d); err != nil {
 			continue
 		}
@@ -1543,7 +1559,7 @@ func RebaseInProgress(dir string) (kind string, ok bool) {
 // Named in the operator-facing message so the remedy points at a real path.
 func RebaseStateDir(dir string) string {
 	for _, name := range []string{"rebase-merge", "rebase-apply"} {
-		d := filepath.Join(dir, ".git", name)
+		d := gitStatePath(dir, name)
 		if _, err := os.Stat(d); err == nil {
 			return d
 		}

@@ -83,7 +83,7 @@ Git keeps a lock file while it changes the index. The server removes a leftover 
 crash or a kill leaves one), so one that appears while the server runs belongs to a git process in that clone: your
 own `git` in a terminal, an editor's git integration, another tool. The error names the file. If no git process runs
 in that clone, delete it (`rm <path>`) and retry the write; nothing else needs repairing. If one does run, let it finish.
-The same error appears when the write's sync step (the rebase onto what the remote gained) meets the lock; it is not a
+The same error appears when the write's sync step (the rebase onto the remote's new commits) meets the lock; it is not a
 merge conflict. If another server process holds the KB at start, the leftover is not removed and the server log says so.
 
 ## Can I turn off the offer to report a bug from an agent?
