@@ -290,29 +290,29 @@ func TestInstructionsDestTracked_SubdirectoryWorkspaceLinkToParent(t *testing.T)
 	}
 }
 
-// A link in a directory component: .claude -> docs/agent makes
-// .claude/CLAUDE.md the tracked docs/agent/CLAUDE.md. Only the leaf was followed.
+// A link in a directory component: .claude -> shared/agent makes
+// .claude/CLAUDE.md the tracked shared/agent/CLAUDE.md. Only the leaf was followed.
 func TestInstructionsDestTracked_SymlinkedDirectoryComponent(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on Windows")
 	}
 	dir := t.TempDir()
 	git(t, dir, "init", "-q")
-	if err := os.MkdirAll(filepath.Join(dir, "docs", "agent"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "shared", "agent"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "docs", "agent", "CLAUDE.md"), []byte("# rules\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "shared", "agent", "CLAUDE.md"), []byte("# rules\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	git(t, dir, "add", filepath.Join("docs", "agent", "CLAUDE.md"))
-	if err := os.Symlink(filepath.Join("docs", "agent"), filepath.Join(dir, ".claude")); err != nil {
+	git(t, dir, "add", filepath.Join("shared", "agent", "CLAUDE.md"))
+	if err := os.Symlink(filepath.Join("shared", "agent"), filepath.Join(dir, ".claude")); err != nil {
 		t.Fatal(err)
 	}
 	opts := ApplyOptions{Provider: configurator.ProviderClaudeCode, BaseDir: dir, Scope: contract.ScopeProject, InstructionsRel: ".claude/CLAUDE.md"}
 	if !InstructionsDestTracked(opts) {
 		t.Error("a destination behind a symlinked directory resolves to the tracked file")
 	}
-	git(t, dir, "rm", "-q", "--cached", filepath.Join("docs", "agent", "CLAUDE.md"))
+	git(t, dir, "rm", "-q", "--cached", filepath.Join("shared", "agent", "CLAUDE.md"))
 	if InstructionsDestTracked(opts) {
 		t.Error("untracked once the resolved file is no longer in the index")
 	}
@@ -475,5 +475,110 @@ func TestGitTrackedPaths_IgnoresInheritedRepoPins(t *testing.T) {
 	}
 	if ok, err := gitTracksFile(ws, "OTHER.md"); err != nil || ok {
 		t.Errorf("gitTracksFile(OTHER.md) = %v, %v: it belongs to the other repository", ok, err)
+	}
+}
+
+// --- spelling and nested repositories (#1897) ---
+
+// A repository that tracks `agents.md` shares the file the client writes as
+// `AGENTS.md` on a case-insensitive filesystem (macOS, Windows). The question
+// is asked case-folded, so the answer does not depend on the filesystem the
+// test runs on: where the two are different files the paths are withheld
+// needlessly, which is the safe side.
+func TestInstructionsDestTracked_FoldsCase(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	git(t, dir, "config", "core.ignorecase", "true")
+	if err := os.WriteFile(filepath.Join(dir, "agents.md"), []byte("# Project rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", "agents.md")
+	opts := ApplyOptions{Provider: configurator.ProviderCodex, BaseDir: dir, Scope: contract.ScopeProject}
+	if !InstructionsDestTracked(opts) {
+		t.Error("AGENTS.md is the tracked agents.md on a case-insensitive filesystem: paths withheld")
+	}
+	git(t, dir, "rm", "-q", "--cached", "agents.md")
+	if InstructionsDestTracked(opts) {
+		t.Error("untracked once the index no longer lists it under any spelling")
+	}
+}
+
+// The listing of a directory above the file folds too.
+func TestInstructionsDestTracked_FoldsCaseOfADirectory(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q")
+	if err := os.MkdirAll(filepath.Join(dir, ".Claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".Claude", "CLAUDE.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "add", filepath.Join(".Claude", "CLAUDE.md"))
+	opts := ApplyOptions{Provider: configurator.ProviderClaudeCode, BaseDir: dir, Scope: contract.ScopeProject, InstructionsRel: ".claude/CLAUDE.md"}
+	if !InstructionsDestTracked(opts) {
+		t.Error(".claude/CLAUDE.md is the tracked .Claude/CLAUDE.md on a case-insensitive filesystem")
+	}
+}
+
+// CLAUDE.md -> inner/AGENTS.md, inner being its own repository: the workspace's
+// git does not list inner's files and answers "not tracked" with no error. It
+// cannot say, so the paths are withheld, and git is not asked.
+func TestInstructionsDestTracked_LinkIntoANestedRepositoryWithholds(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows")
+	}
+	dir, _, opts := trackedFixture(t, configurator.ProviderClaudeCode)
+	inner := filepath.Join(dir, "inner")
+	if err := os.MkdirAll(inner, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git(t, inner, "init", "-q")
+	if err := os.WriteFile(filepath.Join(inner, "AGENTS.md"), []byte("# inner rules\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, inner, "add", "AGENTS.md")
+	if err := os.Symlink(filepath.Join("inner", "AGENTS.md"), filepath.Join(dir, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+	if tracked, err := trackedPathsFn(dir, "inner/AGENTS.md"); err != nil || tracked["inner/AGENTS.md"] {
+		t.Fatalf("premise: the outer repository does not list the inner file (%v, %v)", tracked, err)
+	}
+	prev := trackedPathsFn
+	trackedPathsFn = func(string, ...string) (map[string]bool, error) {
+		t.Error("git must not be asked about a file of another repository")
+		return nil, errors.New("not asked")
+	}
+	t.Cleanup(func() { trackedPathsFn = prev })
+	if !InstructionsDestTracked(opts) {
+		t.Error("a destination inside a nested repository withholds the paths")
+	}
+}
+
+// A `.git` file (a submodule or a linked worktree) marks a repository too, and
+// the workspace's own `.git` does not count.
+func TestInNestedRepo(t *testing.T) {
+	base := t.TempDir()
+	if err := os.WriteFile(filepath.Join(base, ".git"), []byte("gitdir: elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "sub", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(base, "plain", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "sub", ".git"), []byte("gitdir: ../.git/modules/sub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]bool{
+		"AGENTS.md":                  false, // base's own .git is the repository asked
+		"plain/deep/AGENTS.md":       false,
+		"sub/AGENTS.md":              true,
+		"sub/deep/AGENTS.md":         true,
+		"sub/deep/not-yet/CLAUDE.md": true,
+	} {
+		if got := inNestedRepo(base, rel); got != want {
+			t.Errorf("inNestedRepo(%q) = %v, want %v", rel, got, want)
+		}
 	}
 }

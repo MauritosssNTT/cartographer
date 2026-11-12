@@ -735,7 +735,10 @@ A projection writes into a directory the user version-controls, so two rules hol
   absolute paths: the "Local paths" table has no rows and the placeholders in the KB's own instruction
   text stay as written. The same holds when the destination resolves, through a link in the file or in
   a directory above it (listed in `allow_symlinks`), to a tracked file in the workspace, e.g.
-  `CLAUDE.md -> AGENTS.md`, and when it resolves outside the workspace
+  `CLAUDE.md -> AGENTS.md`, and when it resolves outside the workspace or into a nested
+  repository or submodule, whose files the workspace's git does not list. The file is looked up
+  whatever its capitalisation: on a case-insensitive filesystem the `CLAUDE.md` the client writes is
+  the `claude.md` the repository tracks
   ([D-new-no-paths-table-in-tracked-files](decisions/D-new-no-paths-table-in-tracked-files.md)).
   The block is one per workspace and lists the paths of **every** provider bound to it, including
   one a `sync --client` run does not touch; unbinding a provider rewrites it with the others'
@@ -942,13 +945,14 @@ passing `cfg.SearchRoots`/`cfg.Paths`.
   (`paths_section_hash`): a mismatch rewrites the block even when no artifact changed — a concept
   that starts citing a key, or a new `paths:` entry, is not in the manifest diff. When the
   project-scope file the block goes into is tracked by git, or the destination resolves (through a
-  link anywhere in its path) to a tracked file in the workspace or to a place outside it, the
-  machine's paths are withheld: the table has no rows, the `{{repo:…}}`/`{{path:…}}` placeholders in
+  link anywhere in its path) to a tracked file in the workspace, to a place outside it or to a nested
+  repository, the machine's paths are withheld: the table has no rows, the `{{repo:…}}`/`{{path:…}}` placeholders in
   the KB's own instruction text are left as written (an escaped `{{\repo:…}}` still loses its
   backslash), and the paragraph stays and points to `cartographer resolve`.
   `ApplyOptions.WithholdLocalPaths` is set by `sync` and `status` from the same answer — a
-  `git ls-files` for the one or two paths concerned, run without the `GIT_DIR`-style variables a git
-  hook leaves in the environment — so the hash they judge agrees; where git cannot say, the paths
+  `git ls-files` for the one or two paths concerned, case-folded, run without the `GIT_DIR`-style
+  variables a git hook leaves in the environment (as is the client's other git read that names a
+  workspace: the owned-file listing and the bind guard's `origin`) — so the hash they judge agrees; where git cannot say, the paths
   stay. A file that becomes tracked after a sync is rewritten once without them. Skills and the other
   kinds are written to their own files and are expanded as usual.
 - **Repo ambiguity**: a short name matching several distinct remotes is an explicit error (it asks

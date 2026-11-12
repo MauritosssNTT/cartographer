@@ -1655,6 +1655,44 @@ func TrackedPaths(dir string, paths ...string) (map[string]bool, error) {
 	return out, nil
 }
 
+// TrackedPathsFold is TrackedPaths for a caller that must not be fooled by
+// spelling: it returns which of paths (slash-separated, relative to dir, taken
+// literally) git tracks in the index under any capitalisation, keyed by the
+// path as asked. A case-insensitive filesystem (macOS and Windows by default)
+// writes `CLAUDE.md` into the file a repository tracks as `claude.md`, and an
+// exact question about `CLAUDE.md` answers "no". Asking per pathspec
+// (`:(literal,icase)`, which the global --literal-pathspecs would turn off) folds
+// the whole path, directories included, on every filesystem: on a case-sensitive
+// one the answer errs toward "tracked", the safe side for a caller that withholds
+// something from a shared file.
+func TrackedPathsFold(dir string, paths ...string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(paths) == 0 {
+		return out, nil
+	}
+	args := []string{"-C", dir, "ls-files", "-z", "--"}
+	for _, p := range paths {
+		args = append(args, ":(literal,icase)"+p)
+	}
+	cmd := procattr.Hide(exec.Command("git", args...))
+	cmd.Env = gitEnv(nil)
+	b, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files: %w", err)
+	}
+	for _, f := range strings.Split(string(b), "\x00") {
+		if f == "" {
+			continue
+		}
+		for _, p := range paths {
+			if strings.EqualFold(f, p) { // not a file below a directory that folds to p
+				out[p] = true
+			}
+		}
+	}
+	return out, nil
+}
+
 // TrackedModes returns the index mode ("100644", "100755", ...) of every file
 // git tracks at or below pathspecs (taken literally, slash-separated, relative
 // to dir). It is the source of truth for the execute bit of a tracked file:

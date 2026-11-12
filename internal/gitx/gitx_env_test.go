@@ -78,3 +78,41 @@ func TestCheckRepo_TellsNotARepoFromARefusal(t *testing.T) {
 		t.Fatalf("missing directory: ok=%v err=%v, want an error", ok, err)
 	}
 }
+
+// TrackedPathsFold answers for the path as asked, whatever its capitalisation in
+// the index, and does not count a file below a directory that folds to it.
+func TestTrackedPathsFold(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not in PATH")
+	}
+	dir := t.TempDir()
+	mustGit(t, dir, "init", "-q")
+	for p, body := range map[string]string{"agents.md": "x", "Dir/File.md": "y", "star/*.md": "z"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, p), []byte(body), 0o644); err != nil {
+			t.Skipf("write %s: %v", p, err) // a filesystem that cannot name a '*' file
+		}
+		mustGit(t, dir, "add", "-f", p)
+	}
+	got, err := TrackedPathsFold(dir, "AGENTS.md", "dir/file.md", "DIR", "star/*.md", "STAR/other.md", "missing.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"AGENTS.md": true, "dir/file.md": true, "star/*.md": true}
+	if len(got) != len(want) {
+		t.Fatalf("TrackedPathsFold = %v, want %v", got, want)
+	}
+	for p := range want {
+		if !got[p] {
+			t.Errorf("%s must be tracked: %v", p, got)
+		}
+	}
+	if got["DIR"] || got["STAR/other.md"] || got["missing.md"] {
+		t.Errorf("a directory, a glob that is no file and a missing path are not tracked: %v", got)
+	}
+	if none, err := TrackedPathsFold(dir); err != nil || len(none) != 0 {
+		t.Errorf("no paths = %v, %v", none, err)
+	}
+}

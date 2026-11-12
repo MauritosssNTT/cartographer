@@ -12,8 +12,10 @@ import (
 )
 
 // trackedPathsFn is indirected for tests: it asks git which of a few paths
-// (taken literally) a workspace tracks, and a test makes it fail.
-var trackedPathsFn = gitx.TrackedPaths
+// (taken literally, under any capitalisation: a case-insensitive filesystem
+// writes CLAUDE.md into a tracked claude.md) a workspace tracks, and a test makes
+// it fail.
+var trackedPathsFn = gitx.TrackedPathsFold
 
 // InstructionsDestTracked reports whether the project-scope instructions block
 // of opts is written into a file git tracks (#1897), or into a place the client
@@ -34,7 +36,11 @@ var trackedPathsFn = gitx.TrackedPaths
 // workspace answers true without running git: the workspace's tracked set says
 // nothing about the file it lands in (a subdirectory's `CLAUDE.md ->
 // ../AGENTS.md`), so the paths are withheld. So is one that cannot be
-// resolved (a dangling or looping link).
+// resolved (a dangling or looping link). So does one that lands inside a
+// nested repository or a submodule (a `.git` between the workspace and the
+// file): the workspace's git does not list those files, so it cannot say. The
+// question is case-folded: a repository tracking `claude.md` shares the file the
+// client writes as `CLAUDE.md` on a case-insensitive filesystem.
 func InstructionsDestTracked(opts ApplyOptions) bool {
 	if opts.Scope != contract.ScopeProject || opts.BaseDir == "" {
 		return false
@@ -48,7 +54,7 @@ func InstructionsDestTracked(opts ApplyOptions) bool {
 	if !ok {
 		return false
 	}
-	if outside {
+	if outside || inNestedRepo(opts.BaseDir, resolved) {
 		return true
 	}
 	paths := []string{rel}
@@ -61,6 +67,28 @@ func InstructionsDestTracked(opts ApplyOptions) bool {
 	}
 	for _, p := range paths {
 		if tracked[p] {
+			return true
+		}
+	}
+	return false
+}
+
+// inNestedRepo reports whether the slash path rel, relative to base, goes
+// through a directory below base that holds its own `.git` (a directory, or the
+// file of a submodule or worktree): another repository, whose files the
+// repository of base does not list. base's own `.git` is the repository being
+// asked and does not count. A base that cannot be resolved answers false: the
+// caller has already failed on it.
+func inNestedRepo(base, rel string) bool {
+	root, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return false
+	}
+	dir := root
+	parts := strings.Split(rel, "/")
+	for _, part := range parts[:len(parts)-1] {
+		dir = filepath.Join(dir, part)
+		if _, err := os.Lstat(filepath.Join(dir, ".git")); err == nil {
 			return true
 		}
 	}

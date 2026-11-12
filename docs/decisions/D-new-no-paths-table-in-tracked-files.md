@@ -13,7 +13,11 @@ placeholders in the KB's own instruction text stay as written (an escaped `{{\re
 its backslash, metasyntax stays verbatim), so the agent resolves them with `cartographer resolve`,
 which the paragraph names. A destination that resolves outside the workspace (a subdirectory's
 `CLAUDE.md -> ../AGENTS.md`) or cannot be resolved (a dangling or looping link) counts as tracked
-without running git: the workspace's tracked set says nothing about the file it lands in. The
+without running git, and so does one that lands inside a nested repository or a submodule (a `.git`
+between the workspace and the file): the workspace's tracked set says nothing about the file it lands in.
+The file is asked about whatever its capitalisation (`:(literal,icase)` per pathspec, directories
+included): a case-insensitive filesystem writes `CLAUDE.md` into the `claude.md` a repository tracks,
+and on a case-sensitive one the answer errs toward withholding. The
 client decides it once per projection (`provisioning.InstructionsDestTracked`, handed to `Apply`
 and to the status diff as `ApplyOptions.WithholdLocalPaths`), so the paths-section hash that sync
 records is the one status recomputes. An untracked or client-owned destination (`CLAUDE.local.md`,
@@ -44,9 +48,13 @@ rewritten once, without the paths.
 - *Judge the file in `sync` only.* `status` rebuilds the hash without the sync's inputs; a flag only
   one side knew reported drift forever (the `TestShared_Convergence` failure mode).
 - *List the whole index to answer one question.* The client asks git about the one or two paths
-  concerned (`gitx.TrackedPaths`, literal pathspecs), with the variables that pin a repository
+  concerned (`gitx.TrackedPathsFold`, literal case-folded pathspecs), with the variables that pin a repository
   (`GIT_DIR`, `GIT_INDEX_FILE`, …) dropped, since a sync run from a git hook inherits them and would
-  answer for the repository running the hook.
+  answer for the repository running the hook; the other client git reads that name a workspace
+  with `-C` (the owned-file listing that feeds sync, the bind guard's `origin`) run the same way.
+- *Ask git about the name on disk.* A file tracked but absent from the disk, or a directory that
+  differs only in case, has no on-disk spelling to ask about; folding the question needs no
+  filesystem.
 
 **Consequences.** Not decided here: whether an explicit bind should write into a tracked file at
 all, or offer a bind without the block ([D193](D193-workspace-scoped-artifact-projection-one-provider.md)

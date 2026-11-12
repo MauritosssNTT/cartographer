@@ -1425,7 +1425,9 @@ func uncoveredProjectionFiles(provider configurator.Provider, workspace string, 
 	if len(args) == n {
 		return nil
 	}
-	raw, err := procattr.Hide(exec.Command("git", args...)).Output()
+	cmd := procattr.Hide(exec.Command("git", args...))
+	cmd.Env = gitx.Env() // -C names the repository: a hook's GIT_DIR must not
+	raw, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
