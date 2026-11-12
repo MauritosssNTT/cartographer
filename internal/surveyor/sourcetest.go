@@ -197,7 +197,7 @@ func SourceTest(ctx context.Context, cfg *Config, in SourceTestInput) (*SourceTe
 		return rep, err
 	}
 	if isSystem {
-		return rep, rep.observeSystem(ctx, rec, f, tools, in.Show)
+		return rep, rep.observeSystem(ctx, rec, f, tools, in.Show, cfg.Checks)
 	}
 	start := time.Now()
 	listing, pf, lerr := listFeed(ctx, rec, f, maxEntries)
@@ -287,6 +287,9 @@ func (rep *SourceTestReport) describe(ctx context.Context, rec recipe.Recipe, f 
 	cctx, ccancel := context.WithTimeout(ctx, pollListTimeout)
 	defer ccancel()
 	v, err := ck.Check(cctx, feedRequest(f, 0))
+	if ctx.Err() == nil {
+		cfg.Checks.Record(f.Recipe, err, time.Now())
+	}
 	switch {
 	case ctx.Err() != nil:
 		return ctx.Err()
@@ -355,7 +358,7 @@ func (noState) Load(string) (system.Loaded, error) {
 }
 
 // observeSystem fills the report from the poll's own steps 4 to 6.
-func (rep *SourceTestReport) observeSystem(ctx context.Context, rec recipe.Recipe, f feed.Feed, tools ToolCaller, show string) error {
+func (rep *SourceTestReport) observeSystem(ctx context.Context, rec recipe.Recipe, f feed.Feed, tools ToolCaller, show string, checks *CheckLog) error {
 	sr, ok := rec.(recipe.SystemRecipe)
 	if !ok {
 		rep.Failure = &SourceTestFailure{codeRecipeShape, fmt.Sprintf("recipe %q does not list a system", f.Recipe)}
@@ -375,6 +378,7 @@ func (rep *SourceTestReport) observeSystem(ctx context.Context, rec recipe.Recip
 	start := time.Now()
 	obs, pf, refused, err := observeSystem(ctx, sr, systemRequest(f), st, f.Cursor)
 	rep.Duration = time.Since(start)
+	checks.recordSystem(f.Recipe, pf, refused, err, time.Now())
 	if err != nil {
 		return err
 	}

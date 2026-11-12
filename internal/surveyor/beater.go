@@ -54,21 +54,30 @@ type Beater struct {
 	// every beat; empty sends none, which is what a surveyor without the field did.
 	Tasks    []TaskDecl
 	Interval time.Duration // DefaultBeatInterval when zero
-	// Settings is the report posted after the first beat and whenever an answer
-	// says settings_wanted; nil posts none.
+	// Settings is the report posted after the first beat, whenever an answer
+	// says settings_wanted and whenever Sources reports a new generation; nil
+	// posts none.
 	Settings *surveyorconfig.Report
-	Now      func() time.Time // time.Now when nil
-	Logf     func(format string, args ...any)
+	// Sources, when set, gives the report's sources each time it is posted and a
+	// generation that grows whenever one of them changed (a check ran: its age is
+	// no change, so the array itself cannot be compared). A generation past the
+	// one of the last accepted report posts the report again. It must return at
+	// once: it runs on the beater's goroutine, never the runner's, and reads the
+	// generation before the sources, so a change in between is posted next beat.
+	Sources func() ([]surveyorconfig.Source, uint64)
+	Now     func() time.Time // time.Now when nil
+	Logf    func(format string, args ...any)
 
 	sendMu sync.Mutex // one request at a time
 
-	mu       sync.Mutex
-	snap     State
-	beaten   bool
-	stopped  bool
-	answer   *client.HeartbeatAnswer
-	answerAt time.Time // local clock when the answer arrived
-	posted   bool
+	mu        sync.Mutex
+	snap      State
+	beaten    bool
+	stopped   bool
+	answer    *client.HeartbeatAnswer
+	answerAt  time.Time // local clock when the answer arrived
+	posted    bool
+	postedGen uint64 // generation of the sources in the last report accepted
 	// runsSkip is how many accepted beats still go without a runs post after a
 	// 4xx; loggedRunsStatus is the status last logged, until a post succeeds.
 	runsSkip         int
@@ -333,8 +342,9 @@ func (b *Beater) send() {
 	}
 	b.mu.Lock()
 	b.answer, b.answerAt = a, b.now()
-	post := b.Settings != nil && s.Run != StateStopped && !b.refused && (!b.posted || a.SettingsWanted)
+	posted, refused, gen := b.posted, b.refused, b.postedGen
 	b.mu.Unlock()
+	post := b.Settings != nil && s.Run != StateStopped && !refused && (!posted || a.SettingsWanted || b.sourcesGen() != gen)
 	if post {
 		b.postSettings()
 	}
@@ -343,12 +353,35 @@ func (b *Beater) send() {
 	}
 }
 
+// sourcesGen is the generation of the sources now; 0 when there is no source reporter.
+func (b *Beater) sourcesGen() uint64 {
+	if b.Sources == nil {
+		return 0
+	}
+	_, gen := b.Sources()
+	return gen
+}
+
+// reportNow is the settings report with the sources as they are now and their
+// generation. The report is a copy: Settings stays what the caller built.
+func (b *Beater) reportNow() (*surveyorconfig.Report, uint64) {
+	rep := *b.Settings
+	var gen uint64
+	if b.Sources != nil {
+		rep.Sources, gen = b.Sources()
+	}
+	if rep.Sources == nil {
+		rep.Sources = []surveyorconfig.Source{}
+	}
+	return &rep, gen
+}
+
 func (b *Beater) postSettings() {
-	if err := b.API.ReportSurveyorSettings(b.Settings, beatCallTimeout); err != nil {
+	rep, gen := b.reportNow()
+	if err := b.API.ReportSurveyorSettings(rep, beatCallTimeout); err != nil {
 		var re *client.RemoteError
 		if errors.As(err, &re) && re.HTTPStatus >= 400 && re.HTTPStatus < 500 {
-			// The report is constant for the life of the process: a refusal
-			// would repeat on every beat, so it is logged once and not retried.
+			// A refusal would repeat on every beat, so it is logged once and not retried.
 			b.mu.Lock()
 			b.refused = true
 			b.mu.Unlock()
@@ -359,7 +392,7 @@ func (b *Beater) postSettings() {
 		return
 	}
 	b.mu.Lock()
-	b.posted = true
+	b.posted, b.postedGen = true, gen
 	b.mu.Unlock()
 }
 
