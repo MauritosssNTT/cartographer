@@ -903,3 +903,43 @@ func TestTranslateAgentForKiro_NoFrontmatter(t *testing.T) {
 		t.Errorf("prompt = %q", prompt)
 	}
 }
+
+// An agent that arrived by git skipped artifact_write's YAML check: it stays in
+// the manifest (the approval gate holds it) and an issue names why (#1984).
+func TestBuildManifest_AgentFrontmatterNotYAML_NamedAsIssue(t *testing.T) {
+	kbRoot := t.TempDir()
+	agentsDir := filepath.Join(kbRoot, "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, desc string) {
+		body := "---\nname: " + name + "\ndescription: " + desc + "\n---\nBody.\n"
+		if err := os.WriteFile(filepath.Join(agentsDir, name+".md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("bad", "Use when a: b")
+	write("good", `"Use when a: b"`)
+
+	m, err := contract.BuildManifest(nil, map[string]string{"kb-a": kbRoot}, contract.BuildOptions{})
+	if err != nil {
+		t.Fatalf("BuildManifest: %v", err)
+	}
+	agents := map[string]bool{}
+	for _, a := range m.Artifacts {
+		if a.Kind == "agent" {
+			agents[a.Name] = true
+		}
+	}
+	if !agents["bad"] || !agents["good"] {
+		t.Errorf("both agents must stay in the manifest: %v", agents)
+	}
+	if len(m.Issues) != 1 {
+		t.Fatalf("expected exactly one issue, got %v", m.Issues)
+	}
+	for _, want := range []string{"kb-a", `"bad"`, "not valid YAML", "approval"} {
+		if !strings.Contains(m.Issues[0], want) {
+			t.Errorf("issue must contain %q: %s", want, m.Issues[0])
+		}
+	}
+}

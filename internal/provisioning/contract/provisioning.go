@@ -511,6 +511,13 @@ func BuildManifest(bundleFS fs.FS, kbRoots map[string]string, opts BuildOptions)
 				}
 				if raw, size, rerr := ReadFileCapped(filepath.Join(agentsDir, e.Name())); rerr == nil && size == 0 {
 					agent.Restriction = ParseAgentRestriction(raw)
+					// A file that came by git skipped artifact_write's check. The
+					// agent stays (and stays held: the approval gate cannot tell
+					// what it declares), but the reason is named.
+					if yerr := ValidateFrontmatterYAML(raw); yerr != nil {
+						issues = append(issues, fmt.Sprintf("KB %q: agent %q waits for approval: its frontmatter is not valid YAML (%v); "+
+							"it stays held until the frontmatter parses (the usual cause is an unquoted value containing \": \")", kbName, name, yerr))
+					}
 				}
 				artifacts = append(artifacts, agent)
 			}
