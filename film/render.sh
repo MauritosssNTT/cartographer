@@ -14,8 +14,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 ALL=()
-while IFS= read -r name; do
-    [ -n "$name" ] && ALL+=("$name")
+# `|| [ -n "$name" ]`: the last line counts without a final newline. A CR (a CRLF file) and the blanks around a name
+# are dropped, as record.mjs and vite.config.ts do with trim(). An `if`, not `[ ] &&`: under set -e a blank last
+# line would leave the loop with status 1.
+while IFS= read -r name || [ -n "$name" ]; do
+    name="${name//$'\r'/}"
+    name="${name#"${name%%[![:space:]]*}"}"
+    name="${name%"${name##*[![:space:]]}"}"
+    if [ -n "$name" ]; then ALL+=("$name"); fi
 done < film/films.txt
 [ "${#ALL[@]}" -gt 0 ] || { echo "render: film/films.txt lists no film" >&2; exit 1; }
 

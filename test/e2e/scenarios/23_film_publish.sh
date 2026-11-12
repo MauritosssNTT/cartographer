@@ -19,6 +19,10 @@
 #   6. With no argument, publish takes every film/out/*.webp present, still in
 #      one commit; with none present it is exit 1.
 #   7. An input missing at the revision is exit 2 naming it; a bad revision is 2.
+#   8. Only the names film/films.txt allows are published (the render job's file
+#      names are data it chose, D1068): a file not in the list, a name holding a
+#      newline that would add a tree entry, a symlink, are exit 1 and push
+#      nothing; films.txt without a final newline or with CRLF still reads.
 #
 # Expected environment variables: E2E_TMP_DIR, REPO_ROOT.
 
@@ -66,6 +70,7 @@ git config user.email e2e@example.com
 # The scripts under test, and the paths film/inputs.sh lists.
 mkdir -p film/src web/src/lib/graph3d docs/brand web/src/styles
 cp "${REPO_ROOT}/film/publish.sh" "${REPO_ROOT}/film/film-needed.sh" "${REPO_ROOT}/film/inputs.sh" film/
+printf 'launch\nplugins\ndeployment\n' > film/films.txt
 echo main > film/src/main.ts
 echo scene > web/src/lib/graph3d/scene.ts
 echo palette > web/src/lib/palette.ts
@@ -164,7 +169,49 @@ fi
 rm -r film/out
 
 echo ""
-echo "--- Phase 7: an input missing, a bad revision ---"
+echo "--- Phase 7: only the films of film/films.txt are published ---"
+BEFORE="$(git --git-dir="$ORIGIN" rev-parse readme-film)"
+# unchanged <message>: the branch is the commit it was before the refused publish
+unchanged() {
+    if [[ "$(git --git-dir="$ORIGIN" rev-parse readme-film)" == "$BEFORE" ]]; then
+        _assert_pass "$1: nothing was pushed"
+    else
+        _assert_fail "$1: readme-film moved"
+    fi
+}
+mkdir -p film/out
+head -c 2048 /dev/urandom > film/out/film.webp
+head -c 2048 /dev/urandom > film/out/extra.webp
+check "no argument refuses a file the list does not name" 1 film/publish.sh
+assert_file_contains "${DIR}/out.txt" "extra.webp"
+unchanged "an unlisted file"
+rm film/out/extra.webp
+# A name that carries a second `git mktree` line: a symlink entry, if it were let through.
+EVIL="$(printf 'x.webp\n120000 blob %s\ty.webp' "$(printf '/etc/passwd' | git hash-object -w --stdin)")"
+cp film/out/film.webp "film/out/${EVIL}"
+check "no argument refuses a name holding a newline" 1 film/publish.sh
+unchanged "a name holding a newline"
+check "an argument holding a newline is refused" 1 film/publish.sh "film/out/${EVIL}"
+unchanged "an argument holding a newline"
+rm "film/out/${EVIL}"
+check "an argument the list does not name is refused" 1 film/publish.sh film/out/film.webp film/out/extra.webp
+unchanged "an argument not in the list"
+rm film/out/film.webp
+head -c 2048 /dev/urandom > real.bin
+ln -s ../../real.bin film/out/film.webp
+check "a symlink is refused (no argument)" 1 film/publish.sh
+unchanged "a symlink"
+check "a symlink is refused (argument)" 1 film/publish.sh film/out/film.webp
+unchanged "a symlink argument"
+rm film/out/film.webp real.bin
+rmdir film/out
+# The list as an editor on Windows leaves it: CRLF, no final newline.
+printf 'launch\r\nplugins' > film/films.txt
+check "films.txt with CRLF and no final newline still names the films" 0 "${PUBLISH[@]}"
+git checkout -q film/films.txt
+
+echo ""
+echo "--- Phase 8: an input missing, a bad revision ---"
 git rm -q web/src/lib/palette.ts && git commit -qm "rename palette"
 check "a missing input is exit 2" 2 "${NEEDED[@]}"
 assert_file_contains "${DIR}/out.txt" "web/src/lib/palette.ts"

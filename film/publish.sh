@@ -7,30 +7,61 @@
 # film-needed.sh compares to decide whether the films must be rendered again (D1068). One hash covers the whole set.
 #
 # Usage, from the repository root after a full render (film/README.md): film/publish.sh [file...]
-# With no argument it publishes every film/out/*.webp present; each file goes into the tree under its own name
-# (film/out/film.webp is film.webp, the launch film's URL).
+# Only the files film/films.txt allows go on the branch: film.webp for the launch film, <name>.webp for each other
+# film. With no argument it takes, for each listed film, its file in film/out when present, and refuses any other
+# film/out/*.webp; with arguments, each file's name must be an allowed one. Each file is a regular file, not a
+# symlink. It goes into the tree under its own name (film/out/film.webp is film.webp, the launch film's URL).
 # bash 3.2 compatible: it runs on macOS too.
 set -euo pipefail
 # shellcheck source=film/inputs.sh
 . "$(dirname "${BASH_SOURCE[0]}")/inputs.sh"
 
-FILES=("$@")
-if [ "${#FILES[@]}" -eq 0 ]; then
+# The films, read as film/render.sh reads them (last line without a newline, CRLF, blanks around a name).
+FILMS=()
+while IFS= read -r name || [ -n "$name" ]; do
+    name="${name//$'\r'/}"
+    name="${name#"${name%%[![:space:]]*}"}"
+    name="${name%"${name##*[![:space:]]}"}"
+    if [ -n "$name" ]; then FILMS+=("$name"); fi
+done < film/films.txt
+[ "${#FILMS[@]}" -gt 0 ] || { echo "publish: film/films.txt lists no film" >&2; exit 1; }
+
+# The file name a film is published under: the launch film keeps the name the README embeds.
+ALLOWED=()
+for name in "${FILMS[@]}"; do
+    if [ "$name" = launch ]; then ALLOWED+=(film.webp); else ALLOWED+=("${name}.webp"); fi
+done
+allowed() { local a; for a in "${ALLOWED[@]}"; do [ "$a" = "$1" ] && return 0; done; return 1; }
+
+# Why only the listed names (D1068): the files come from the render job, which runs code of an untrusted ref, so
+# a file name is data it chose. `git mktree` below reads one line per entry, `<mode> blob <id><TAB><name>`, so a
+# name holding a newline would add entries of its own (a symlink to anywhere, say) to the tree that is
+# force-pushed. The names allowed are the ones the checked-out commit's film/films.txt lists, which that job does
+# not control, and a name never goes into the tree otherwise.
+FILES=()
+if [ "$#" -eq 0 ]; then
     for f in film/out/*.webp; do
-        if [ -e "$f" ]; then FILES+=("$f"); fi
+        if [ -e "$f" ] || [ -L "$f" ]; then
+            allowed "${f##*/}" || { printf 'publish: %q is not a film of film/films.txt (allowed: %s)\n' "$f" "${ALLOWED[*]}" >&2; exit 1; }
+        fi
+    done
+    for name in "${ALLOWED[@]}"; do
+        if [ -e "film/out/${name}" ] || [ -L "film/out/${name}" ]; then FILES+=("film/out/${name}"); fi
     done
     [ "${#FILES[@]}" -gt 0 ] || { echo "publish: no film/out/*.webp, render the films first (film/README.md)" >&2; exit 1; }
+else
+    for f in "$@"; do
+        allowed "${f##*/}" || { printf 'publish: %q is not a film of film/films.txt (allowed: %s)\n' "$f" "${ALLOWED[*]}" >&2; exit 1; }
+        FILES+=("$f")
+    done
 fi
 
 ENTRIES=""
 SEEN=" "
 for f in "${FILES[@]}"; do
-    [ -s "$f" ] || { echo "publish: ${f} is missing or empty, render it first (film/README.md)" >&2; exit 1; }
-    name="$(basename "$f")"
-    case "$name" in
-    *.webp) ;;
-    *) echo "publish: ${f} is not a .webp" >&2; exit 1 ;;
-    esac
+    [ -f "$f" ] && [ ! -L "$f" ] || { printf 'publish: %q is not a regular file, render it first (film/README.md)\n' "$f" >&2; exit 1; }
+    [ -s "$f" ] || { echo "publish: ${f} is empty, render it first (film/README.md)" >&2; exit 1; }
+    name="${f##*/}"
     case "$SEEN" in
     *" ${name} "*) echo "publish: two files are named ${name}" >&2; exit 1 ;;
     esac
