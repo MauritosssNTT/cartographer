@@ -15,8 +15,7 @@ cd "$ROOT"
 
 ALL=()
 # `|| [ -n "$name" ]`: the last line counts without a final newline. A CR (a CRLF file) and the blanks around a name
-# are dropped, as record.mjs and vite.config.ts do with trim(). An `if`, not `[ ] &&`: under set -e a blank last
-# line would leave the loop with status 1.
+# are dropped, as record.mjs and vite.config.ts do with trim(). Blank lines are skipped.
 while IFS= read -r name || [ -n "$name" ]; do
     name="${name//$'\r'/}"
     name="${name#"${name%%[![:space:]]*}"}"
