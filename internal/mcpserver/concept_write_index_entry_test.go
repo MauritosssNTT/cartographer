@@ -131,6 +131,37 @@ func TestConceptWrite_IndexEntry_RefusedShapesChangeNothing(t *testing.T) {
 	}
 }
 
+// The unreadable-descriptor and unreadable-index refusals name the folder, never
+// the directory the server keeps its data in (relPathErr, #1911). A directory
+// where the file should be fails to read with EISDIR on every platform.
+func TestConceptWrite_IndexEntry_UnreadableErrorsCarryNoServerPath(t *testing.T) {
+	t.Parallel()
+	k := setupTestKB(t)
+	seedIndexMaps(t, k, map[string]string{
+		"nodesc/index.md": "---\ntype: Index\ntitle: nodesc\n---\n# nodesc\n",
+		"noindex/_map.md": "---\ntype: Map\nkind: map\ntitle: noindex\n---\n# noindex\n",
+	})
+	// nodesc/_map.md and noindex/index.md are directories.
+	for _, dir := range []string{"nodesc/_map.md", "noindex/index.md"} {
+		if err := os.MkdirAll(filepath.Join(k.DataRoot(), dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := New("test")
+	RegisterKBTools(s, k, Deps{})
+	for _, id := range []string{"nodesc/page", "noindex/page"} {
+		text, isErr := callJSON(t, s, adminCtx, "concept_write", cwArgs(id, "P", "x", map[string]any{"index_entry": true}))
+		if !isErr || !strings.Contains(text, "index.md unreadable") {
+			t.Fatalf("%s: err=%v %s", id, isErr, text)
+		}
+		for _, root := range []string{k.Root, k.DataRoot()} {
+			if strings.Contains(text, root) {
+				t.Fatalf("%s: the result carries the server path %q: %s", id, root, text)
+			}
+		}
+	}
+}
+
 // The index edit failing after the write is a note, not an error; the KB is
 // not a git repository, so no gate rolls the write back.
 func TestConceptWrite_IndexEntry_EditFailureIsANote(t *testing.T) {

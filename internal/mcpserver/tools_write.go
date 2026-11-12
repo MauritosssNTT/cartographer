@@ -2887,7 +2887,7 @@ func planIndexEntry(k *kb.KB, id string) (pendingIndexEntry, error) {
 		if errors.Is(err, okf.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 			return p, fmt.Errorf("'index_entry': %s/ is not a Map (no _map.md): drop index_entry, or create the Map first", mapName)
 		}
-		return p, fmt.Errorf("'index_entry': %s/index.md unreadable: %w", mapName, err)
+		return p, fmt.Errorf("'index_entry': %s/index.md unreadable: %s", mapName, relPathErr(err, k.Root, k.DataRoot()))
 	}
 	if contract.Index == kb.IndexGenerated {
 		p.note = fmt.Sprintf("%s/index.md is generated: it lists %s already", mapName, id)
@@ -2895,7 +2895,7 @@ func planIndexEntry(k *kb.KB, id string) (pendingIndexEntry, error) {
 	}
 	content, _, err := k.IndexHash(mapName)
 	if err != nil {
-		return p, fmt.Errorf("'index_entry': %s/index.md unreadable: %w", mapName, err)
+		return p, fmt.Errorf("'index_entry': %s/index.md unreadable: %s", mapName, relPathErr(err, k.Root, k.DataRoot()))
 	}
 	if indexLinks(k, mapName, content, okf.ConceptID(id)) {
 		p.note = fmt.Sprintf("curated index %s/index.md: already links %s, no entry added", mapName, id)
