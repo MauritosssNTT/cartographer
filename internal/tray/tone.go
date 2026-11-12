@@ -18,17 +18,18 @@ type toneColors struct{ Light, Dark color.NRGBA }
 var toneTable = map[Tone]toneColors{
 	ToneOK:     {Light: rgb(0x36, 0x5D, 0x50), Dark: rgb(0x91, 0xB9, 0xA0)},
 	ToneBusy:   {Light: rgb(0x8F, 0x52, 0x00), Dark: rgb(0xFF, 0x9F, 0x0A)},
-	ToneDown:   {Light: rgb(0xB3, 0x26, 0x1E), Dark: rgb(0xFF, 0x69, 0x61)},
-	ToneUpdate: {Light: rgb(0x0A, 0x5C, 0xC4), Dark: rgb(0x4F, 0x9B, 0xFF)},
+	ToneDown:   {Light: rgb(0xB3, 0x26, 0x1E), Dark: rgb(0xFF, 0x6A, 0x63)},
+	ToneUpdate: {Light: rgb(0x0A, 0x5C, 0xC4), Dark: rgb(0x51, 0x9C, 0xFF)},
 }
 
 // Approximations of the menu background, which is a translucent material that
 // takes some of the wallpaper: a status text must reach 4.5:1 on each sample of
-// its appearance. They are the lightest and darkest the material is seen to
-// take in each appearance, not values the system publishes.
+// its appearance. The samples are chosen, not measured, and not values the
+// system publishes; the outer ones (#E0E0E0, #333333) leave a margin for a
+// bright or a dark wallpaper behind the menu.
 var (
-	menuLight = []color.NRGBA{rgb(0xF6, 0xF6, 0xF6), rgb(0xEC, 0xEC, 0xEC)}
-	menuDark  = []color.NRGBA{rgb(0x1E, 0x1E, 0x1E), rgb(0x2A, 0x2A, 0x2A)}
+	menuLight = []color.NRGBA{rgb(0xF6, 0xF6, 0xF6), rgb(0xEC, 0xEC, 0xEC), rgb(0xE0, 0xE0, 0xE0)}
+	menuDark  = []color.NRGBA{rgb(0x1E, 0x1E, 0x1E), rgb(0x2A, 0x2A, 0x2A), rgb(0x33, 0x33, 0x33)}
 )
 
 func rgb(r, g, b uint8) color.NRGBA { return color.NRGBA{R: r, G: g, B: b, A: 0xFF} }

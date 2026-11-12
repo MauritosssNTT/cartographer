@@ -27,17 +27,24 @@ func contrast(a, b color.NRGBA) float64 {
 	return (hi + 0.05) / (lo + 0.05)
 }
 
-// Every badge tone with a fixed colour is readable (WCAG AA, 4.5:1) on the
-// light and on the dark menu: the orange "Out of sync" was not on the light one.
+// Every tone with a fixed colour (every entry of toneTable, so a tone added
+// later is checked too) is readable (WCAG AA, 4.5:1) on the light and on the
+// dark menu: the orange "Out of sync" was not on the light one. ToneNone and
+// ToneIdle use the system label colour and have no fixed one.
 func TestToneColorsAreReadableOnTheMenu(t *testing.T) {
 	const minRatio = 4.5
-	for tone := ToneOK; tone <= ToneUpdate; tone++ {
-		if tone == ToneIdle { // the system label colour
-			if _, ok := toneColor(tone, false); ok {
-				t.Errorf("tone %d has a fixed colour, want the system label colour", tone)
-			}
-			continue
+	for _, tone := range []Tone{ToneNone, ToneIdle} {
+		if _, ok := toneColor(tone, false); ok {
+			t.Errorf("tone %d has a fixed colour (light), want the system label colour", tone)
 		}
+		if _, ok := toneColor(tone, true); ok {
+			t.Errorf("tone %d has a fixed colour (dark), want the system label colour", tone)
+		}
+	}
+	if len(toneTable) == 0 {
+		t.Fatal("toneTable is empty")
+	}
+	for tone := range toneTable {
 		for _, ap := range []struct {
 			name string
 			dark bool
@@ -45,7 +52,7 @@ func TestToneColorsAreReadableOnTheMenu(t *testing.T) {
 		}{{"light", false, menuLight}, {"dark", true, menuDark}} {
 			fg, ok := toneColor(tone, ap.dark)
 			if !ok {
-				t.Errorf("tone %d has no fixed colour: add it to toneTable", tone)
+				t.Errorf("tone %d has no fixed colour on the %s menu", tone, ap.name)
 				continue
 			}
 			for _, bg := range ap.bgs {
