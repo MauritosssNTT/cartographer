@@ -90,6 +90,28 @@ func TestProxyIdentity(t *testing.T) {
 	}
 }
 
+// ProxyToken says the bearer is a trusted-proxy token even when the request
+// named no person (Via empty), and only then.
+func TestPrincipalProxyTokenFlag(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		proxyTok bool
+		hdr      map[string]string
+		want     bool
+	}{
+		{"proxy token, no identity", true, nil, true},
+		{"proxy token, person named", true, map[string]string{"X-User": "alice", "X-Groups": "staff"}, true},
+		{"normal token", false, nil, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			code, p := doProxy(proxyStore(t, Policy{Permissions: []Permission{{KB: "kb-a", Write: true}}}, c.proxyTok), "192.0.2.7:1", c.hdr)
+			if code != 200 || p.ProxyToken != c.want {
+				t.Fatalf("status %d, ProxyToken = %v, want %v (principal %+v)", code, p.ProxyToken, c.want, p)
+			}
+		})
+	}
+}
+
 func TestClampKeepsTheCeilingsRestrictions(t *testing.T) {
 	ceiling := Policy{Permissions: []Permission{{KB: "kb-a", Write: true, NoSecrets: true, ReadOnlyArtifacts: true}}}
 	got := Clamp(Policy{Permissions: []Permission{{KB: "kb-a", Write: true}, {KB: "kb-z", Write: true}}}, ceiling)

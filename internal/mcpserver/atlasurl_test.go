@@ -110,6 +110,11 @@ func TestKBStatus_UIURLOnlyForALocalCaller(t *testing.T) {
 	multi.SetAtlasAddr("0.0.0.0:39273")
 	base := routedTokenStore("kb-a").Middleware(multi.Handler())
 	viaBase := routedTokenStore("kb-a").Middleware(markViaPrincipal(multi.Handler()))
+	// A proxy token that forwards anonymous traffic: no identity header, so
+	// Via stays empty, but the token is the proxy's (internal/auth/proxy.go).
+	proxyTokBase := auth.NewScopedTokenStore([]auth.ScopedToken{{
+		Token: routedTestToken, Proxy: true, Scopes: []auth.KBScope{{KB: "kb-a", Write: true}},
+	}}).Middleware(multi.Handler())
 	want := "http://127.0.0.1:39273/ui/?kb=kb-a"
 	cases := []struct {
 		name    string
@@ -129,11 +134,15 @@ func TestKBStatus_UIURLOnlyForALocalCaller(t *testing.T) {
 		{"loopback proxy, X-Forwarded-Proto", "127.0.0.1:50000", []string{"X-Forwarded-Proto", "https"}, false},
 		{"loopback proxy, Via", "127.0.0.1:50000", []string{"Via", "1.1 proxy.example.com"}, false},
 		{"loopback, trusted-proxy principal, no header", "127.0.0.1:50000", nil, false},
+		{"loopback, proxy token without identity", "127.0.0.1:50000", nil, false},
 	}
 	for _, c := range cases {
 		h := base
-		if strings.Contains(c.name, "trusted-proxy") {
+		switch {
+		case strings.Contains(c.name, "trusted-proxy"):
 			h = viaBase
+		case strings.Contains(c.name, "proxy token"):
+			h = proxyTokBase
 		}
 		obj, _ := routedKBStatusConnection(t, fromPeer(h, c.peer, c.headers...), RoutedMountPath, "kb-a")
 		if !c.present {

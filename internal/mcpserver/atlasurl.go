@@ -47,8 +47,10 @@ var forwardingHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Ho
 //
 // TRAP: it reads the principal from the request context, so it must run inside
 // the authentication middleware (serve wraps MultiKBServer.Handler in it); a
-// principal with Via set is a person a trusted proxy named, proof that the TCP
-// peer is the proxy and not the caller, whatever headers the proxy forwarded.
+// principal on a proxy token (ProxyToken, and Via when it named a person) says
+// the TCP peer is the proxy and not the caller, whatever headers the proxy
+// forwarded, and a proxy relaying anonymous traffic on its own token leaves Via
+// empty.
 func withLocalCaller(r *http.Request) *http.Request {
 	if !isLocalRequest(r) {
 		return r
@@ -57,7 +59,7 @@ func withLocalCaller(r *http.Request) *http.Request {
 }
 
 func isLocalRequest(r *http.Request) bool {
-	if auth.PrincipalFromContext(r.Context()).Via != "" {
+	if p := auth.PrincipalFromContext(r.Context()); p.Via != "" || p.ProxyToken {
 		return false
 	}
 	for _, h := range forwardingHeaders {
