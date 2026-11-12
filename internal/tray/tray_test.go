@@ -603,8 +603,14 @@ func TestRunRequestBehindQueuedReadIsNotRemembered(t *testing.T) {
 	f.ticks <- time.Now()
 	settled(1)
 
+	// A send on the unbuffered channel proves only that Run received the
+	// request, not that it counted the reads in flight. Run is one loop: the
+	// first tick is received only once the request is handled, the second only
+	// once that tick's poll is. Read 1 must not end before that, or the request
+	// would find one read in flight, not two.
 	requests <- struct{}{}
-	requests <- struct{}{}
+	f.ticks <- time.Now()
+	f.ticks <- time.Now()
 	finishRead(out, 1)
 	waitReads(2) // the queued read begins, after the request
 	finishRead(out, 2)
