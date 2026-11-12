@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BeppeTemp/cartographer/internal/surveyor/recipe"
 	"github.com/BeppeTemp/cartographer/internal/surveyor/recipe/recipetest"
 )
 
@@ -179,5 +180,14 @@ func TestPluginTestFailsAConformanceCheck(t *testing.T) {
 	code, out := runPlugin(t, "test", dir)
 	if code != 1 || !strings.Contains(out, "secrets") || !strings.Contains(out, "the value of WIKI_TOKEN appears in entry") {
 		t.Errorf("exit %d\n%s", code, out)
+	}
+}
+
+// An exec recipe is a program of the folder started as the user: its command is
+// printed, escaped, before it runs.
+func TestExecAnnouncementNamesTheCommandEscaped(t *testing.T) {
+	line := execAnnouncement("lister", &recipe.ExecConfig{Command: "/store/p/run.sh", Args: []string{"--all", "a\x1b[2Jb"}})
+	if !strings.Contains(line, "/store/p/run.sh --all") || strings.ContainsRune(line, 0x1b) || !strings.Contains(line, "unapproved") {
+		t.Errorf("%q", line)
 	}
 }

@@ -85,3 +85,25 @@ func TestExpectJudgesWhatAStepAsserts(t *testing.T) {
 		t.Errorf("ok: false expects check_failed: %v", err)
 	}
 }
+
+// A failed step prints the cursor or the keys it got; a recipe that echoed the
+// token there must not show it in the report.
+func TestReportDetailRedactsTheMappedVariables(t *testing.T) {
+	src := `
+def lst(r):
+    return {"entries": [{"key": "k-" + env.get("TOKEN"), "title": "t", "revision": "1", "change": "added"}], "next_cursor": "c-" + env.get("TOKEN")}
+recipe("wiki", lst)
+`
+	sc := scenario(Step{Verb: "list", Expect: Expect{NextCursor: "other", Entries: []any{"x"}}})
+	sc.Env["TOKEN"] = "s3cr3t-token-value"
+	res := Run(context.Background(), starInput(t, src, "feed", sc))
+	if res[0].Status != Fail || strings.Contains(res[0].Detail, "s3cr3t-token-value") {
+		t.Errorf("%+v", res[0])
+	}
+	sc = scenario(Step{Verb: "list", Expect: Expect{Entries: []any{"x"}}})
+	sc.Env["TOKEN"] = "s3cr3t-token-value"
+	res = Run(context.Background(), starInput(t, src, "feed", sc))
+	if res[0].Status != Fail || strings.Contains(res[0].Detail, "s3cr3t-token-value") || !strings.Contains(res[0].Detail, "***") {
+		t.Errorf("%+v", res[0])
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/BeppeTemp/cartographer/internal/plugin/core"
 	"github.com/BeppeTemp/cartographer/internal/plugin/starcore"
 	"github.com/BeppeTemp/cartographer/internal/plugin/starcore/recipes"
+	"github.com/BeppeTemp/cartographer/internal/surveyor/connector"
 	"github.com/BeppeTemp/cartographer/internal/surveyor/recipe"
 )
 
@@ -44,6 +45,7 @@ type Input struct {
 
 type run struct {
 	in     Input
+	env    map[string]string // the mapped variables, which a report line redacts
 	r      recipe.Recipe
 	replay *starcore.Replay
 	stage  string
@@ -84,6 +86,7 @@ func Run(ctx context.Context, in Input) []Result {
 		env = sc.Env
 		x.r = recipe.NewStarlark(sc)
 	}
+	x.env = env
 	defer x.setEnv(env)()
 	x.steps(ctx)
 	x.automatic(ctx)
@@ -123,7 +126,9 @@ func (x *run) add(check string, err error, skip string) {
 	case skip != "":
 		r.Status, r.Detail = Skip, skip
 	case err != nil:
-		r.Status, r.Detail = Fail, err.Error()
+		// Whatever a failure prints (a cursor, the keys a step got) may hold a
+		// mapped variable's value the recipe echoed: redact it like a recipe error.
+		r.Status, r.Detail = Fail, connector.RedactEnv(err.Error(), x.env)
 	}
 	x.out = append(x.out, r)
 }
