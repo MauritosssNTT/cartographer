@@ -139,6 +139,11 @@ func (h *Hook) Normalize() error {
 	if h.Point == PointSecretResolver && h.FailurePolicy != FailClosed {
 		return fail("failure_policy: a secret resolver has nothing to open to, it must be fail_closed")
 	}
+	if h.Point == PointSecretResolver {
+		// mode does not apply: a resolver supplies a value or nothing, and a
+		// dry run would hand back no value (Decide), which is a failure.
+		h.Mode = ModeEnforce
+	}
 	if len(h.KBs) > 0 && h.Point != PointWriteVeto {
 		return fail("kbs applies to write_veto only")
 	}
