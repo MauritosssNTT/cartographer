@@ -390,3 +390,80 @@ func TestFeedbackRoutes_AreInternalTier(t *testing.T) {
 		t.Fatalf("%d feedback routes, want 2", seen)
 	}
 }
+
+// Five principals, one flooding under many Surveyor ids: the flooder pays for its
+// own excess and the others keep what they held (below their fair share of the 512).
+func TestFeedbackCandidates_FairShareAgainstAFlood(t *testing.T) {
+	t.Parallel()
+	s := &surveyorStore{}
+	base := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	others := []string{"a", "b", "c", "d"}
+	for _, p := range others {
+		s.fillCandidates(p, 2, 50, base) // 100 each, the oldest sightings
+	}
+	s.fillCandidates("flood", 10, componentproto.MaxCandidatesPerSurveyor, base.Add(time.Hour))
+	for _, p := range others {
+		if got := s.heldBy(p); got != 100 {
+			t.Fatalf("%s holds %d after a flood, want its 100 (fair share is %d)", p, got, componentproto.MaxCandidatesTotal/5)
+		}
+	}
+	s.mu.Lock()
+	n := s.candidatesLocked()
+	s.mu.Unlock()
+	if n != componentproto.MaxCandidatesTotal || s.heldBy("flood") != componentproto.MaxCandidatesTotal-400 {
+		t.Fatalf("total %d, flood holds %d, want %d and %d", n, s.heldBy("flood"), componentproto.MaxCandidatesTotal, componentproto.MaxCandidatesTotal-400)
+	}
+}
+
+// Four principals tied at the cap and a newcomer below them: the newcomer is never
+// the victim, and the tied holder paying is the one with the oldest sighting, the
+// smaller id when those are equal.
+func TestFeedbackCandidates_TieOfLargestHoldersIsDeterministic(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		olders string // the principal whose sightings are older, "" for none
+		victim string
+	}{{"oldest sighting", "p3", "p3"}, {"equal sightings: smaller id", "", "p1"}} {
+		s := &surveyorStore{}
+		for _, p := range []string{"p4", "p2", "p3", "p1"} {
+			at := base.Add(time.Hour)
+			if p == tc.olders {
+				at = base
+			}
+			s.fillCandidates(p, 2, componentproto.MaxCandidatesPerSurveyor, at)
+		}
+		s.fillCandidates("q", 1, 1, base.Add(2*time.Hour))
+		for _, p := range []string{"p1", "p2", "p3", "p4"} {
+			want := componentproto.MaxCandidatesPerPrincipal
+			if p == tc.victim {
+				want--
+			}
+			if got := s.heldBy(p); got != want {
+				t.Errorf("%s: %s holds %d, want %d", tc.name, p, got, want)
+			}
+		}
+		if got := s.heldBy("q"); got != 1 {
+			t.Errorf("%s: the newcomer holds %d, want 1", tc.name, got)
+		}
+	}
+}
+
+// The poster is among the largest holders: it pays first, whatever the ids and the ages.
+func TestFeedbackCandidates_APosterAmongTheLargestPaysFirst(t *testing.T) {
+	t.Parallel()
+	s := &surveyorStore{}
+	base := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	s.fillCandidates("a", 2, componentproto.MaxCandidatesPerSurveyor, base) // the oldest, the smallest id
+	s.fillCandidates("z", 2, componentproto.MaxCandidatesPerSurveyor, base.Add(time.Hour))
+	s.fillCandidates("m", 1, 10, base.Add(time.Hour))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if got := s.evictionVictimLocked("z"); got != "z" {
+		t.Errorf("a poster tied for the most pays first, victim %q", got)
+	}
+	if got := s.evictionVictimLocked("m"); got != "a" {
+		t.Errorf("a smaller poster is not the victim: want the oldest of the tied, got %q", got)
+	}
+}

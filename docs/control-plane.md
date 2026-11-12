@@ -601,8 +601,10 @@ dropped, not refused; an older Meridian ignores the field, so it does not bump t
 ages, never times: Meridian dates `first_at`/`last_at` on its own clock, as it does for runs. Candidates are
 deduplicated by `(kind, surveyor, kb, tool, code)` with the Surveyor's cumulative `count` and the earliest and
 latest sighting, kept in memory with the runs they ride (at most 64 per Surveyor, 128 per principal and 512 in
-all; a bound takes the holder's own oldest last sighting, and the total one the largest holder's, so a principal
-posting under many Surveyor ids cannot push another's candidates out), gone with the declaration and on a restart, never written to a KB or to disk. With
+all; the per-Surveyor and per-principal bounds take the holder's own oldest last sighting, the total one takes
+from a largest holder: each principal keeps at least its fair share of the 512, and a principal posting under
+many Surveyor ids cannot push another below that share. On a tie the poster pays if it is among the largest,
+else the tied holder with the oldest last sighting), gone with the declaration and on a restart, never written to a KB or to disk. With
 `feedback.destination: off` the field is accepted and dropped.
 
 Two read routes serve the Atlas (internal tier, so not on `/api/v1` and not in its OpenAPI document), both `GET`

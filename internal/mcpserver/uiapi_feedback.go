@@ -118,9 +118,13 @@ func (m *MultiKBServer) acceptCandidates(in []runsCandidate, principal, perimete
 
 // mergeCandidatesLocked upserts into the book (the Surveyor's count is cumulative,
 // so it replaces ours; the earliest first sighting and the latest last one
-// win) and applies the bounds: per Surveyor, then in all, oldest last sighting
-// out first. The caller holds the store's lock.
+// win) and applies the bounds: per Surveyor (64), per principal (128), then in
+// all (512, from a largest holder, see below); the oldest last sighting goes
+// first. The caller holds the store's lock.
 func (s *surveyorStore) mergeCandidatesLocked(b *runBook, cands []reportCandidate) {
+	if len(cands) == 0 {
+		return
+	}
 	for _, c := range cands {
 		held := false
 		for i := range b.cands {
@@ -142,16 +146,21 @@ func (s *surveyorStore) mergeCandidatesLocked(b *runBook, cands []reportCandidat
 		}
 		b.evictSurveyorCandidates(c.Surveyor)
 	}
-	// The bounds are per principal first and then in all, and both take the
-	// holder's own oldest: a principal that posts many candidates under many
-	// Surveyor ids pushes out its own, never another principal's.
-	for p := range s.runs {
-		for s.principalCandidatesLocked(p) > componentproto.MaxCandidatesPerPrincipal {
-			s.evictOldestOfLocked(p)
-		}
+	// The per-principal bound takes the holder's own oldest: a principal that
+	// posts many candidates under many Surveyor ids pushes out its own.
+	poster := cands[0].principal
+	for s.principalCandidatesLocked(poster) > componentproto.MaxCandidatesPerPrincipal {
+		s.evictOldestOfLocked(poster)
 	}
+	// The total bound only ever takes from a largest holder, so it is a fair
+	// share: each principal keeps at least min(what it holds, its fair share of the
+	// total), about MaxCandidatesTotal/N for N principals, and a principal posting
+	// under many Surveyor ids cannot push another below that share. On a tie of
+	// largest holders the poster pays if it is one of them, else the tied holder
+	// with the oldest last sighting does, so the choice does not depend on an id
+	// order or on map iteration.
 	for s.candidatesLocked() > componentproto.MaxCandidatesTotal {
-		s.evictOldestOfLocked(s.largestHolderLocked())
+		s.evictOldestOfLocked(s.evictionVictimLocked(poster))
 	}
 }
 
@@ -162,20 +171,36 @@ func (s *surveyorStore) principalCandidatesLocked(principal string) (n int) {
 	return n
 }
 
-// largestHolderLocked is the principal holding the most candidates (the
-// smaller id on a tie, so the choice is stable).
-func (s *surveyorStore) largestHolderLocked() string {
-	best, bestN := "", -1
+// evictionVictimLocked is the principal that pays for the total bound: a
+// holder of the most candidates; among tied holders the poster if it is one,
+// else the one whose oldest last sighting is the oldest (the smaller id when
+// even those are equal).
+func (s *surveyorStore) evictionVictimLocked(poster string) string {
+	most := 0
 	for p := range s.runs {
-		if n := s.principalCandidatesLocked(p); n > bestN || (n == bestN && p < best) {
-			best, bestN = p, n
+		most = max(most, s.principalCandidatesLocked(p))
+	}
+	if s.principalCandidatesLocked(poster) == most {
+		return poster
+	}
+	victim, victimAt := "", time.Time{}
+	for p := range s.runs {
+		if s.principalCandidatesLocked(p) != most {
+			continue
+		}
+		bk, i := s.oldestCandidateLocked(p)
+		if bk == nil {
+			continue
+		}
+		if at := bk.cands[i].LastAt; victim == "" || at.Before(victimAt) || (at.Equal(victimAt) && p < victim) {
+			victim, victimAt = p, at
 		}
 	}
-	return best
+	return victim
 }
 
-// evictOldestOfLocked drops the principal's candidate with the oldest last sighting.
-func (s *surveyorStore) evictOldestOfLocked(principal string) {
+// oldestCandidateLocked finds the principal's candidate with the oldest last sighting.
+func (s *surveyorStore) oldestCandidateLocked(principal string) (*runBook, int) {
 	var ob *runBook
 	oi := -1
 	for _, bk := range s.runs[principal] {
@@ -185,7 +210,12 @@ func (s *surveyorStore) evictOldestOfLocked(principal string) {
 			}
 		}
 	}
-	if ob != nil {
+	return ob, oi
+}
+
+// evictOldestOfLocked drops the principal's candidate with the oldest last sighting.
+func (s *surveyorStore) evictOldestOfLocked(principal string) {
+	if ob, oi := s.oldestCandidateLocked(principal); ob != nil {
 		ob.cands = append(ob.cands[:oi], ob.cands[oi+1:]...)
 	}
 }
