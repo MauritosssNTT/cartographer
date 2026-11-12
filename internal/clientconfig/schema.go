@@ -58,8 +58,10 @@ var Schema = settingschema.Schema{Keys: []settingschema.Key{
 
 // UnknownKeys lists the keys of a .cartographer.yaml that the table does not
 // describe, that no retired entry explains and that Save does not drop on
-// purpose (droppedKeys): the ones it keeps and writes back unchanged, so a typo
-// would otherwise sit there for good. doctor reports them.
+// purpose (droppedKeys). A top-level one is kept and written back unchanged, so
+// a typo would otherwise sit there for good; a nested one (server.ulr) is
+// dropped on the next save, so doctor is where it shows before that. doctor
+// reports both.
 func UnknownKeys(data []byte) []settingschema.Unknown {
 	var out []settingschema.Unknown
 	for _, u := range Schema.Unknown(data, Retired) {

@@ -37,11 +37,17 @@ known_kbs: [a]
 	}
 }
 
-// A file the client wrote has no unknown key, and an unknown one is kept and
-// written back by Save, as before: reporting it must not drop it.
+// A file the client wrote has no unknown key, and a TOP-LEVEL unknown one is
+// kept and written back by Save, as before: reporting it must not drop it. A
+// nested one (server.ulr) is not: Save writes the struct fields, so it is gone
+// on the next save, and doctor is the only place it shows before that.
 func TestUnknownKeyIsKeptBySaveAndSavedFilesHaveNone(t *testing.T) {
 	dir := t.TempDir()
-	writeConfigFile(t, dir, "server:\n  url: http://127.0.0.1:39273/mcp\nlegacy_mode: fast\n")
+	writeConfigFile(t, dir, "server:\n  url: http://127.0.0.1:39273/mcp\n  ulr: http://typo.example.com/mcp\nlegacy_mode: fast\n")
+	before, _ := os.ReadFile(clientconfig.Path(dir))
+	if got := clientconfig.UnknownKeys(before); len(got) != 2 {
+		t.Fatalf("UnknownKeys before Save = %+v, want legacy_mode and server.ulr", got)
+	}
 	cfg, err := clientconfig.Load(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +61,9 @@ func TestUnknownKeyIsKeptBySaveAndSavedFilesHaveNone(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "legacy_mode: fast") {
 		t.Fatalf("Save dropped the unknown key:\n%s", raw)
+	}
+	if strings.Contains(string(raw), "ulr") {
+		t.Errorf("a nested unknown key survived Save; the docs say it is dropped:\n%s", raw)
 	}
 	if got := clientconfig.UnknownKeys(raw); len(got) != 1 || got[0].Path != "legacy_mode" {
 		t.Errorf("UnknownKeys = %+v, want only legacy_mode", got)
