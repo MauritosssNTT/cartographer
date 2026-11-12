@@ -80,19 +80,25 @@ const maxCheckAge = 10 * 365 * 24 * 3600
 // (an unknown origin, kind, shape or outcome, a name that is not an operator or
 // a qualified name, a plugin that does not match its name, a digest that is not
 // 64 hex digits, a code on a check that did not fail), when its name repeats
-// or when it is past MaxSources. Nothing the sender wrote outside the fields is
+// among the recipes or among the connectors (a recipe and a connector of the
+// same name are two sources) or when it is past MaxSources. Nothing the sender wrote outside the fields is
 // kept, and At is the receipt time minus the age.
 func ScrubSources(in []Source, receivedAt time.Time) []Source {
 	out := make([]Source, 0, min(len(in), MaxSources))
-	seen := map[string]bool{}
+	type key struct {
+		name      string
+		connector bool
+	}
+	seen := map[key]bool{}
 	for _, s := range in {
 		if len(out) >= MaxSources {
 			break
 		}
-		if seen[s.Name] || !sourceShape(s) {
+		k := key{s.Name, s.Kind == KindMCP}
+		if seen[k] || !sourceShape(s) {
 			continue
 		}
-		seen[s.Name] = true
+		seen[k] = true
 		c := SourceCheck{Outcome: s.Check.Outcome, Code: s.Check.Code}
 		if c.Outcome == CheckOK || c.Outcome == CheckFailed {
 			c.At = receivedAt.Add(-time.Duration(s.Check.AgeSeconds) * time.Second).UTC()

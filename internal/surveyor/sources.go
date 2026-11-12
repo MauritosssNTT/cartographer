@@ -3,7 +3,6 @@ package surveyor
 import (
 	"errors"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -12,9 +11,11 @@ import (
 )
 
 // CheckLog keeps, in memory, the last `check` outcome of each recipe by name.
-// The poll and `source test` record into it where they already call Check; the
-// beater reads it to report the sources (D1259). A nil log records nothing and
-// reports every check as never, so a Config built without one stays usable.
+// The system poll records into it where it already calls Check (a feed poll
+// sends list only, and `source test` is a process with no beater: neither
+// records); the beater reads it to report the sources (D1259). A nil log
+// records nothing and reports every check as never, so a Config built without
+// one stays usable.
 //
 // TRAP: Record runs on the runner's goroutine and Snapshot on the beater's:
 // both hold the mutex for a map access only, never across a call, so the beater
@@ -94,7 +95,7 @@ func (l *CheckLog) last(name string, now time.Time) surveyorconfig.SourceCheck {
 // report: names, origins, kinds and the last check, nothing else (no command,
 // arguments, URL, environment name or header ever reaches the report). A name
 // with a "/" is a plugin's, and the plugin's pinned digest comes from its pin.
-// The array is sorted by name and cut at surveyorconfig.MaxSources, so a report
+// The array is sorted by name (a recipe before a connector of the same name) and cut at surveyorconfig.MaxSources, so a report
 // is stable between two beats that changed nothing.
 //
 // TRAP: a connector reports unsupported (it has no check verb) and a built-in
@@ -128,7 +129,14 @@ func (c *Config) Sources(now time.Time) []surveyorconfig.Source {
 	for _, x := range c.Connectors {
 		add(x.Name, surveyorconfig.KindMCP, "", surveyorconfig.SourceCheck{Outcome: surveyorconfig.CheckUnsupported})
 	}
-	sort.Slice(out, func(i, j int) bool { return strings.Compare(out[i].Name, out[j].Name) < 0 })
+	// A recipe and a connector may share a name (a plugin's recipes/wiki and
+	// connectors/wiki.yaml, or an operator's): both are reported, the recipe first.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Kind != surveyorconfig.KindMCP && out[j].Kind == surveyorconfig.KindMCP
+	})
 	if len(out) > surveyorconfig.MaxSources {
 		out = out[:surveyorconfig.MaxSources]
 	}
