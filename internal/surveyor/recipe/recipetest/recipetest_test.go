@@ -292,7 +292,8 @@ recipe("wiki", lst, spec = spec, check = check, fetch = f)
 	if status(res, "parser") != Fail || status(res, "fetch") != Fail {
 		t.Errorf("%+v", res)
 	}
-	// And the order of the report is the order of Checks.
+	// And the order of the report is the order of Checks, less the connector
+	// check, which only RunConnector reports.
 	var got []string
 	for _, r := range res {
 		if !strings.HasPrefix(r.Check, "step") {
@@ -301,7 +302,9 @@ recipe("wiki", lst, spec = spec, check = check, fetch = f)
 	}
 	var want []string
 	for _, c := range Checks {
-		want = append(want, c.Name)
+		if c.Name != "connector" {
+			want = append(want, c.Name)
+		}
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("report order %v, want %v", got, want)
