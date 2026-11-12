@@ -2,6 +2,7 @@ package gitx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -93,6 +94,38 @@ func quoteLine(output string, phrases []string, rejectedOnly bool) string {
 		line = line[:200] + "..."
 	}
 	return fmt.Sprintf(" (the remote said: %q)", line)
+}
+
+// unreachablePhrases are the lines git and ssh print when the remote could not
+// be reached at all: no DNS answer, no route, a refused or silent connection.
+// An authentication or authorization failure is not among them: the remote
+// answered, and its answer is a verdict on the credential.
+var unreachablePhrases = []string{
+	"could not resolve host", "could not resolve hostname", "temporary failure in name resolution",
+	"name or service not known", "network is unreachable", "no route to host",
+	"connection timed out", "operation timed out", "connection refused",
+	"failed to connect to", "couldn't connect to server", "could not connect to server",
+}
+
+// IsRemoteUnreachable reports whether err, from ProbePushAccess, says the
+// remote did not answer: the probe's deadline passed, or git's own output names
+// a network failure. A caller that probes for a verdict on a credential (doctor)
+// skips the check on this and does not call the credential refused: the machine
+// may simply be offline.
+func IsRemoteUnreachable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrProbeTimeout) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	for _, p := range unreachablePhrases {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // probeRefName is the branch the push probe aims at; a dry run never creates it.

@@ -68,7 +68,9 @@ Some refusals are the remote's decision and retrying only repeats them: a token 
 pull-request-only branches), a file over the size limit (`GH001`). The KB is `failed` after one attempt and
 `sync_status` quotes the remote's own line with the way out; the change stays committed in the local clone and is
 pushed by the next write once the cause is fixed. `cartographer setup` checks push access with a dry run before it
-creates anything.
+creates anything, `cartographer kb clone` runs the same dry run after the clone and warns (it does not fail: you may
+clone to read), and `cartographer doctor` runs it for every KB of the local server (`push-access`; a remote that does
+not answer is skipped with a note, not reported as refused). The server start does not probe.
 
 Cartographer does not sign commits, and it ignores your global `commit.gpgsign` and `core.hooksPath` when it commits
 (a background service cannot answer a pinentry prompt or run a hook written for your own commits). A remote that

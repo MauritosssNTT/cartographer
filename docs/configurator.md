@@ -129,7 +129,7 @@ decides every step **before** running any:
   SSH batch mode, host keys never auto-accepted — D173); a failure exits 2 **before anything is
   written**, with the remedy for the recognised git errors. A second probe, `git push --dry-run` of a
   throw-away commit to a branch that does not exist (`gitx.ProbePushAccess`), asks whether those credentials may
-  *push*: a read-only token or deploy key exits 2 at once with the same remedy, instead of failing at the first write.
+  *push*: a read-only token or deploy key exits 2 at once with the same remedy, instead of failing at the first write. The same probe runs after `kb clone` and in `doctor` (below), with the environment the *server* pushes that KB with (its `<kb>.token`/`<kb>.ssh`, else `default.*`, in the credentials directory), not only the machine's.
   It sees access only; a repository rule or required signature shows at the first real push.
 - **The KB's initial commit is authored by the operator (D904, D156).** `kb create` (so `setup`'s KB
   step) creates the repository first and then asks git who the operator is there, so a global identity
@@ -766,7 +766,7 @@ cartographer doctor [--output table|json] [--provider claude]
 **It never repairs, and never writes** — no lockfile migration, no directory creation, no cache
 refresh — except `--repair-hashes` below, the one flag that rewrites the lockfile. Every finding names a real path on this machine and the command that fixes it (`sync`,
 `reconnect`, `connect`, `service sync-timer install`), because a diagnosis nobody can act on is
-noise and a doctor that silently fixes things is a doctor nobody can predict.
+noise and a doctor that silently fixes things is a doctor nobody can predict. One check, `push-access`, uses the network (a push dry run to each KB's remote, in a temporary repository); it is skipped with a note when the remote does not answer.
 
 The checks:
 
@@ -782,6 +782,7 @@ The checks:
 | `wsl` | inside a WSL distro only (nothing runs elsewhere): a WSL1 kernel (warning, unsupported); the server config's data dir on a Windows drive under `/mnt/` (error; move it under `$HOME`); an installed service without the `\Cartographer\WslKeepAlive` task (warning: the distro stops ~15 s after the last terminal closes; fix `cartographer service install`, or `instanceIdleTimeout=-1` under `[general]` in `.wslconfig`, which also silences it); `networkingMode=mirrored` in `.wslconfig` (info: not verified by Cartographer). What needs Windows interop is an info when interop is disabled (`deployment.md` §Windows with WSL) |
 | `trigger` | every connected provider has a session hook, or the scheduled trigger is installed (D140); a timer the operator uninstalled on purpose is info (D325) |
 | `push-lag` | a KB's `/health` entry carries a `push` object: its push failed, or commits stayed unpushed past `kb.PushLagThreshold` (3 minutes), so the remote and the server's clone are diverging. Warning severity; the message is the same line as `status` prints, the fix is on the remote or its credentials. Silent when the server is unreachable or predates the field |
+| `push-access` | each KB of a **local** server (loopback `server_url`, the server answered) that has an `origin` is probed with the push dry run of `setup` (`gitx.ProbePushAccess`, [#1999](https://github.com/BeppeTemp/cartographer/issues/1999)): a throw-away commit in a temporary repository, so nothing is written to the remote or left in the KB's clone, under the credentials the server pushes that KB with. A credential that can read and not push is a warning naming the remote's own line, the fix is a credential with write access (or nothing, if the KB is read on purpose). The check needs the network: a remote that does not answer (the probe's 20 s deadline, or git printing a DNS, route or refused-connection failure, `gitx.IsRemoteUnreachable`) is an info finding saying the check was skipped, never a verdict, and does not change the exit code. Silent for a server on another machine and when the server is unreachable. `kb clone` runs the same probe on the clone it made and only prints a warning (exit 0: a reader may clone on purpose); the server start never probes |
 | `capability` | every per-KB gate Meridian advertises on `/health` is on, and no KB was mounted by discovery rather than by a `kbs[]` entry (D151). Info severity: it names the setting that would change it |
 | `symlink` | no managed destination directory (global, or under a workspace binding) is a symlink, or anything else that is not a plain directory — provisioning refuses to write through one, so the artifacts it would hold are not installed (D148, widened in D216); the fix is to replace it or to list it with `cartographer client symlinks <provider> --add <path>`. A destination that is itself a **listed** link (`providers.<provider>.allow_symlinks`) is an `info` finding naming its target, with no fix |
 | `kb-collisions` | no two KBs bound to the same provider claim one `kind`+`name` (D171). `sync` refuses outright when they do, so a machine that has not synced since the binding changed would otherwise show no symptom. Silent when the server is unreachable |

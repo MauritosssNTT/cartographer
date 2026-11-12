@@ -2,6 +2,8 @@ package gitx
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -220,5 +222,42 @@ func TestCommit_TimeoutKeepsAnOlderLock(t *testing.T) {
 	}
 	if _, serr := os.Stat(lock); serr != nil {
 		t.Errorf("a lock older than the commit was removed: %v", serr)
+	}
+}
+
+// "Offline" is defined by what git said: the deadline passed, or its output names
+// a network failure. A verdict from the remote (refused credential, rule, missing
+// repository) is not offline, or a read-only token would be reported as no answer.
+func TestIsRemoteUnreachable(t *testing.T) {
+	t.Parallel()
+	for name, out := range map[string]string{
+		"dns":         "git push --dry-run https://example.com/kb.git: the host name does not resolve\nfatal: unable to access 'https://example.com/kb.git/': Could not resolve host: example.com",
+		"ssh dns":     "ssh: Could not resolve hostname example.com: nodename nor servname provided",
+		"refused":     "fatal: unable to access 'http://127.0.0.1:1/kb.git/': Failed to connect to 127.0.0.1 port 1 after 0 ms: Connection refused",
+		"windows":     "fatal: unable to access 'http://127.0.0.1:1/kb.git/': Failed to connect to 127.0.0.1 port 1 after 2060 ms: Could not connect to server",
+		"no route":    "ssh: connect to host example.com port 22: No route to host",
+		"unreach":     "ssh: connect to host example.com port 22: Network is unreachable",
+		"ssh timeout": "ssh: connect to host example.com port 22: Connection timed out",
+	} {
+		if err := errors.New(out); !IsRemoteUnreachable(err) {
+			t.Errorf("%s: IsRemoteUnreachable = false for %q", name, out)
+		}
+	}
+	if !IsRemoteUnreachable(fmt.Errorf("%w for example.com: context deadline exceeded", ErrProbeTimeout)) {
+		t.Error("a probe that hit its deadline is unreachable")
+	}
+	for name, out := range map[string]string{
+		"read-only token": "git push --dry-run https://example.com/kb.git: this credential cannot push to the remote\nremote: Permission to org/kb.git denied to user.\nfatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403",
+		"rejected key":    "git push --dry-run git@example.com:kb.git: the forge rejected this machine's SSH key\ngit@example.com: Permission denied (publickey).",
+		"missing repo":    "remote: Repository not found.\nfatal: repository 'https://example.com/kb.git/' not found",
+		"rules":           "remote: error: GH013: Repository rule violations found",
+		"empty":           "",
+	} {
+		if IsRemoteUnreachable(errors.New(out)) {
+			t.Errorf("%s: the remote answered, IsRemoteUnreachable = true for %q", name, out)
+		}
+	}
+	if IsRemoteUnreachable(nil) {
+		t.Error("nil is not unreachable")
 	}
 }
