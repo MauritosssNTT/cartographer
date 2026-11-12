@@ -5,7 +5,7 @@ import { App } from "../App";
 import { staticReleases } from "../api/static";
 import type { ReleaseEntry, ReleasesView } from "../api/types";
 import { Releases, withoutTitleLine } from "../components/Releases";
-import { json, openPanels, stubApi } from "./fixtures";
+import { bootedVersionButton, json, openPanels, stubApi } from "./fixtures";
 
 const entry = (version: string, over: Partial<ReleaseEntry> = {}): ReleaseEntry => ({
   version,
@@ -44,8 +44,8 @@ function stub(view: ReleasesView | (() => Response) = VIEW) {
  * That boot is heavy and its role queries compute styles (css: true), so on a
  * loaded gate it can outlast Testing Library's 1000 ms; the waits there are a
  * label lookup (no role, no styles) and the dialog is read synchronously after
- * the click. No timeout is raised anywhere: a wait that needs a longer budget
- * is waiting for something the test should name instead.
+ * the click. The boot wait alone has its own budget (bootedVersionButton, in
+ * fixtures.ts); the content tests do not boot the App and keep the default.
  */
 const VERSION_BUTTON = /Meridian version v1\.2\.3/;
 
@@ -58,7 +58,7 @@ async function openFromRail() {
   const user = userEvent.setup();
   render(<App />);
   // The version button is the rail's own, drawn after its /health answer.
-  await user.click(await screen.findByLabelText(VERSION_BUTTON));
+  await user.click(await bootedVersionButton(VERSION_BUTTON));
   return { user, sheet: screen.getByRole("dialog", { name: "Releases" }) };
 }
 
@@ -87,7 +87,7 @@ describe("the release history sheet", () => {
   it("does not fetch the history before the version is clicked", async () => {
     const fetchMock = stub();
     render(<App />);
-    await screen.findByLabelText(VERSION_BUTTON);
+    await bootedVersionButton(VERSION_BUTTON);
     expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/releases"))).toBe(false);
   });
 

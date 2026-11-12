@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "../App";
-import { json, openPanels, reviewSkill, stubApi } from "./fixtures";
+import { bootedVersionButton, json, openPanels, reviewSkill, stubApi } from "./fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Markdown } from "../components/Markdown";
 import { clearToken, hasToken, restoreToken, setToken } from "../api/client";
@@ -189,7 +189,7 @@ describe("a release's changelog is rendered as untrusted content (D862)", () => 
     // The version sits at the foot of the left rail.
     // A label lookup for the boot (no role query, no computed styles over the
     // whole app), and the dialog read synchronously once the click has landed.
-    await user.click(await screen.findByLabelText(/Meridian version v1\.2\.3/));
+    await user.click(await bootedVersionButton(/Meridian version v1\.2\.3/));
     const sheet = screen.getByRole("dialog", { name: "Releases" });
     await within(sheet).findByRole("heading", { name: "Features" });
 
