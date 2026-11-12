@@ -70,9 +70,10 @@ const (
 // classOf says which rule of the listing protocol a protocol_error broke. The
 // production parser enforces them all and names the line; this reads its
 // verdict, it does not judge the entries again.
-// TRAP: it matches the parser's messages (internal/surveyor/recipe/exec.go,
-// entryOf and parseLines), so the fixtures of the table in checks_test fail
-// loudly when a message changes.
+// TRAP: it matches the parser's messages (internal/surveyor/recipe/exec.go:
+// entryOf, systemEntryOf and parseLines for the entries, ListSystem for the
+// system cursor); each pattern has a fixture in
+// TestEveryCheckFailsOnItsNonConformingRecipe, so a changed message fails it.
 func classOf(verb string, err error) string {
 	var re *recipe.Error
 	if verb != "list" || !errors.As(err, &re) {
