@@ -1072,6 +1072,15 @@ log holds the tests' output too, so the script reads only lines in `go test`'s e
 a line that looks like one but is not gets no retry. Green, the tests are flaky:
 the signoff goes on, names them on a `signoff: flaky:` line and in the status (`<n> flaky
 retried`); red, it prints `signoff: confirmed on a targeted retry:` and fails (D1755).
+A red gate log names what failed (#1952, #1870). `test/e2e/run.sh` ends a red report with one
+`E2E FAILED: <scenario>: <first [FAIL] line>` line per failed scenario and that scenario's `[FAIL]`
+lines (it keeps each scenario's output while it streams, to say so). A red Windows leg prints, to
+the gate log and before any retry, the output of every package that failed, from its first
+`--- FAIL`, `panic:`, `fatal error:` or data race line (a build failure from its first line): the
+first 45 and last 15 lines of a package past 60, only the verdict line past the 8th package;
+what follows the last verdict is printed as it is (its last 40 lines), and passing packages are
+left out, so a panic's header and an earlier package's failure are in the log. A panic or an e2e failure is still no named Go test: `test-failures.sh` plans no
+retry for either (`internal/repodocs/gate_names_test.go`).
 
 A maintainer's queued changes (`make ready`, `CONTRIBUTING.md` §Pull requests) are gated by
 the lander as a **train**: `scripts/land.sh` runs `scripts/signoff.sh` once on `main` plus up
@@ -1079,7 +1088,8 @@ to 8 changes. A train whose signoff retried flaky tests lands on that gate, with
 issue naming them. A red train whose failure the signoff's targeted retry confirmed goes
 straight to bisection; any other red train is gated a second time on the same tree: green
 then is a flaky test, the train lands and a `bug` issue names the failing tests (Go, vitest
-and Playwright names read from the log); red again, the lander
+and Playwright names read from the log, the e2e scenarios as `e2e.<scenario>` with their first
+failing lines in the body, a Go panic as `pkg.Test (panic)` or `pkg (panic: <message>)`); red again, the lander
 bisects over the train's prefixes (one signoff each) and rejects the first change whose
 prefix is red. When the signoff confirmed the failure on named Go tests, its `signoff: probe:`
 line names their packages and platform, and each bisection step runs only those

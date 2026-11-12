@@ -406,22 +406,44 @@ gate() { # $1 = log file; exit 0 green, 1 red, 2 not a test (the caller dies)
   done
 }
 
-# The tests a red gate log names: the ones a signoff retry confirmed (the Windows leg's output
-# has no `--- FAIL` line of the linux shape; they are what the change broke) first, then Go
-# top-level tests, vitest cases, Playwright specs. At most 10, `pkg.Test` and `Test` once.
+# The failures a red gate log names, in this order: the tests a signoff retry confirmed (the Windows
+# leg's output has no `--- FAIL` line of the linux shape; they are what the change broke), the Go
+# panics (`pkg.Test (panic)` when the test is known: the `--- FAIL` line before the panic, go test's
+# `running tests:` after a timeout, or a `.TestX(` frame of the trace; else `pkg (panic: <message>)`,
+# named by the `FAIL<TAB>pkg` line that ends the package), the e2e scenarios (`e2e.<scenario>`, from
+# the `E2E FAILED: <scenario>: ...` lines of test/e2e/run.sh), then Go top-level tests, vitest cases,
+# Playwright specs. At most 10, `pkg.Test` and `Test` once. A name is built from the charset
+# [A-Za-z0-9_.-] (a panic's message also spaces and `:`, cut to 60): the title of an issue.
 failing() { # $1 = gate log; vitest and Playwright colour their lines
-  local clean confirmed others
+  local clean confirmed panics e2e others
   clean=$(sed "s/$(printf '\033')\[[0-9;]*m//g" "$1" | tr -d '\r')
   confirmed=$(sed -n 's/^signoff: confirmed on a targeted retry: *//p' <<<"$clean" | tr ' ' '\n' | grep -E '^[A-Za-z0-9_.-]+$' | awk '!s[$0]++' || true)
+  panics=$(awk '
+    function reset() { inpanic = 0; last = ""; tn = ""; msg = "" }
+    /^--- FAIL: Test/ { t = $3; sub(/\/.*$/, "", t); if (!inpanic) last = t; next }
+    /^panic: / { if (!inpanic) { inpanic = 1; msg = substr($0, 8); tn = last }; next }
+    inpanic && tn == "" && /^[ \t]+Test[A-Za-z0-9_]* \(/ { t = $1; if (t ~ /^Test[A-Za-z0-9_]*$/) tn = t; next }
+    inpanic && tn == "" && match($0, /\.Test[A-Za-z0-9_]+\(/) { tn = substr($0, RSTART + 1, RLENGTH - 2); next }
+    /^(ok|\?)[ \t]/ { reset(); next }
+    /^FAIL[ \t]+[^ \t]/ {
+      if (inpanic) {
+        pkg = $2; sub(/^.*\//, "", pkg); gsub(/[^A-Za-z0-9_.-]/, "", pkg)
+        sub(/ \[recovered\]$/, "", msg); gsub(/[^A-Za-z0-9 _.:-]/, "", msg); msg = substr(msg, 1, 60); sub(/ +$/, "", msg)
+        if (pkg != "") print (tn != "" ? (pkg "." tn " (panic)") : (pkg " (panic: " msg ")"))
+      }
+      reset()
+    }' <<<"$clean" | awk '!s[$0]++' || true)
+  e2e=$(sed -n 's/^E2E FAILED: \([A-Za-z0-9_.-][A-Za-z0-9_.-]*\): .*/e2e.\1/p' <<<"$clean" | awk '!s[$0]++' || true)
   others=$(sed -n \
     -e 's/^--- FAIL: \([A-Za-z0-9_]*\).*/\1/p' \
     -e 's/^ FAIL  \([^ ]*\) > .*/\1/p' \
     -e 's/^ *✘ *[0-9]* *\([^ ]*\) .*/\1/p' <<<"$clean" | LC_ALL=C sort -u || true)
   # Through the environment: macOS awk refuses a newline in a -v value, and the lander runs there.
-  printf '%s\n' "$others" | CONFIRMED=$confirmed awk '
+  # A first name covers the plain test it ends in: `pkg.Test (panic)` and `Test` are one failure.
+  printf '%s\n' "$others" | FIRST=$(printf '%s\n%s\n%s' "$confirmed" "$panics" "$e2e") awk '
     BEGIN {
-      n = split(ENVIRON["CONFIRMED"], a, "\n")
-      for (i = 1; i <= n; i++) if (a[i] != "") { print a[i]; t = a[i]; sub(/^.*\./, "", t); seen[t] = 1 }
+      n = split(ENVIRON["FIRST"], a, "\n")
+      for (i = 1; i <= n; i++) if (a[i] != "") { print a[i]; t = a[i]; sub(/ .*$/, "", t); sub(/^.*\./, "", t); seen[t] = 1 }
     }
     $0 != "" && !($0 in seen) { print }' | head -n 10 | tr '\n' ' ' | sed 's/ $//' || true
 }
@@ -643,8 +665,13 @@ while :; do
     fi
     if [ "$rc2" = 0 ]; then
       log "red once, green on the re-run: a flaky test (${fails:-not named})"
-      issue_flaky "${fails:-the gate of a train}" "failed once and passed on a re-run" \
-        "The gate of the train \`$branch\` failed, then passed on the same tree. Failing tests: ${fails:-none named in the log}. A re-run is not a fix: find why it fails."
+      # The e2e runner's own lines say which assertion failed first: the issue keeps them (#1952).
+      issue_body="The gate of the train \`$branch\` failed, then passed on the same tree. Failing tests: ${fails:-none named in the log}. A re-run is not a fix: find why it fails."
+      e2e_lines=$(sed 's/\r$//' "$glog" | grep '^E2E FAILED: ' | head -n 10 | sed 's/^/    /' || true)
+      if [ -n "$e2e_lines" ]; then
+        issue_body="$issue_body"$'\n\n'"The first failing line of each e2e scenario:"$'\n\n'"$e2e_lines"
+      fi
+      issue_flaky "${fails:-the gate of a train}" "failed once and passed on a re-run" "$issue_body"
     else
       lo=0 hi=$k good=
       # The confirmed tests alone (their packages, a minute or two) find the change that

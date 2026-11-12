@@ -237,6 +237,41 @@ retry() { # $1 = linux|windows, $2 = the red log; 0 when the retry is green
   esac
 }
 
+# 4e. What a red Windows leg printed, package by package (#1952, #1870). The leg's log is
+# every package's `go test` output whole, one after the other (scripts/test-shard.sh): a
+# package ends on its `ok`, `?` or `FAIL<TAB><package>` line. The output of each package that
+# failed goes to the gate log from its first `--- FAIL`, `panic:`, `fatal error:` or data race
+# line (a build failure from its first line), cut to its first 45 and last 15 lines when longer
+# than 60 (a panic's header and the top of its trace are at the start, the verdict at the end),
+# and of the packages past the 8th only the verdict line. What follows the last verdict (the
+# wrapper's own words, a leg cut short) is printed as it is, its last 40 lines. A `tail` of the
+# whole log used to cut the `panic:` header and every package but the last.
+win_failures() { # $1 = the leg's log
+  tr -d '\r' <"$1" | awk -v max=60 -v head=45 -v pkgs=8 '
+    function flush(verdict,   i, start, n, from, label) {
+      if (nb == 0) return
+      if (verdict) { label = $2; shown++ }
+      else label = "the end of the log"
+      if (shown > pkgs && verdict) { print buf[nb]; nb = 0; return }
+      start = 1
+      if (verdict) for (i = 1; i <= nb; i++)
+        if (buf[i] ~ /^(--- FAIL|panic: |fatal error: |WARNING: DATA RACE)/) { start = i; break }
+      if (!verdict && nb > 40) start = nb - 39
+      n = nb - start + 1
+      if (n <= max) { for (i = start; i <= nb; i++) print buf[i] }
+      else {
+        for (i = start; i < start + head; i++) print buf[i]
+        print "signoff: (" (n - max) " lines of the output of " label " cut)"
+        for (i = nb - (max - head) + 1; i <= nb; i++) print buf[i]
+      }
+      nb = 0
+    }
+    /^(ok|\?)[ \t]/ { nb = 0; next }
+    /^FAIL[ \t]+[^ \t]/ { buf[++nb] = $0; flush(1); next }
+    { buf[++nb] = $0 }
+    END { flush(0) }'
+}
+
 # 4. Targets. First the platform probe, so a broken wrapper is found before the gate is spent.
 read -r -a mk <<<"${SIGNOFF_MAKE:-make}"
 prc=0
@@ -295,7 +330,9 @@ if [ -n "$win_pid" ]; then
   case "$wrc" in
     0) windows="windows $(printf '%dm%02ds' $((wsecs / 60)) $((wsecs % 60)))" ;;
     75) windows="windows unavailable"; echo "signoff: warning: the Windows machine is unavailable, leg skipped" >&2 ;;
-    1) tail -n 40 "$win_log" >&2
+    1) echo "signoff: the Windows leg is red: the output of its failing package(s):" >&2
+       winout=$(win_failures "$win_log")
+       if [ -n "$winout" ]; then printf '%s\n' "$winout" >&2; else tail -n 40 "$win_log" >&2; fi
        lrc=0; retry windows "$win_log" || lrc=$?
        [ "$lrc" != 2 ] || host_die "the Windows machine" "$hostrc"
        [ "$lrc" = 0 ] || die "the Windows leg failed (exit $wrc): nothing pushed, nothing posted" ;;

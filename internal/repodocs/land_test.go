@@ -95,6 +95,12 @@ if [ -e CONFIRMED ] || { [ -e FLAKYGO ] && [ ! -e "$FAKE_STATE.flakedgo" ]; }; t
   exit 2
 fi
 if [ -e FLAKY ] && [ ! -e "$FAKE_STATE.flaked" ]; then touch "$FAKE_STATE.flaked"; echo "--- FAIL: TestSometimes"; exit 2; fi
+# The e2e runner's report of two failed scenarios (E2EFLAKY: the first gate only), no Go test named.
+if [ -e E2EFLAKY ] && [ ! -e "$FAKE_STATE.e2eflaked" ]; then
+  touch "$FAKE_STATE.e2eflaked"
+  printf ' E2E Report\n Failed  : 2\nE2E FAILED: 03_config_opencode: [FAIL] file not found: x\nE2E FAILED: 15_operational_audit: [FAIL] no key\n[run] FAIL - 2 scenario(s) failed\nmake: *** [Makefile:188: e2e] Error 1\n'
+  exit 2
+fi
 exit 0
 `)
 	e.write(filepath.Join(e.bin, "gh"), `#!/bin/bash
