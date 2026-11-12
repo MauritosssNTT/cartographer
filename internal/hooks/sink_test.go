@@ -230,3 +230,68 @@ func TestSink_ReportsAGap(t *testing.T) {
 		t.Fatalf("gap: %v, %d", err, rc.gaps)
 	}
 }
+
+// Await is bounded by the hook's timeout even while the tailer delivers a
+// long backlog through a slow hook.
+func TestSink_AwaitIsBoundedWhileTheTailerDelivers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	l, err := audit.OpenWithOptions(filepath.Join(dir, "audit.jsonl"), audit.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	rc := &sinkReceiver{}
+	s, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		rc.handler(w, r)
+	})
+	r := sinkReg(t, s.URL, func(h *Hook) { h.BatchSize, h.Timeout = 1, time.Second })
+	appendN(t, l, 30)
+	last, _ := l.TailFunc(1, nil)
+	sk, err := r.NewSink("acme/siem", auditSource(l), nil, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = sk.drain(ctx, "") }() // the tailer, with 6 s of backlog
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	err = sk.Await(context.Background(), last[0].Hash)
+	if d := time.Since(start); err == nil || d > 2*time.Second {
+		t.Fatalf("await: %v after %s, want a timeout within about 1 s", err, d)
+	}
+}
+
+// During a backoff an append does not trigger a delivery.
+func TestSink_BackoffIgnoresWakeUps(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	l, err := audit.OpenWithOptions(filepath.Join(dir, "audit.jsonl"), audit.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	s, hits := serve(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
+	r := sinkReg(t, s.URL, nil)
+	sk, err := r.NewSink("acme/siem", auditSource(l), l.Wake(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { sk.Run(ctx); close(done) }()
+	appendN(t, l, 1) // the first wake-up: one failed delivery, then a 1 s backoff
+	time.Sleep(100 * time.Millisecond)
+	before := hits.Load()
+	for i := 0; i < 20; i++ {
+		appendN(t, l, 1)
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := hits.Load(); got != before {
+		t.Fatalf("%d deliveries during the backoff", got-before)
+	}
+	cancel()
+	<-done
+}

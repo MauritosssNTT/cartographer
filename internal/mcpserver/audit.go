@@ -247,7 +247,7 @@ type auditCall struct {
 //   - sink attached, append fails, required mode: (call, rejected, false) —
 //     the caller must return rejected to the client WITHOUT ever invoking the
 //     tool handler (fail closed) and must not call end.
-func (s *Server) beginAuditCall(who auditWho, tool string, readOnly bool, resources map[string]string) (call auditCall, rejected ToolResult, ok bool) {
+func (s *Server) beginAuditCall(ctx context.Context, who auditWho, tool string, readOnly bool, resources map[string]string) (call auditCall, rejected ToolResult, ok bool) {
 	s.mu.Lock()
 	log, kbName, transport, sinks := s.auditLog, s.kbName, s.transport, s.blockingSinks
 	s.mu.Unlock()
@@ -275,7 +275,7 @@ func (s *Server) beginAuditCall(who auditWho, tool string, readOnly bool, resour
 		// Blocking audit sinks (D-new-audit-sink): the attempt is durable
 		// locally; the call waits for the external copy. A rejection closes the
 		// pair with audit_unavailable, so the chain stays paired.
-		if name := awaitBlockingSinks(sinks, attempt.Hash); name != "" {
+		if name := awaitBlockingSinks(ctx, sinks, attempt.Hash); name != "" {
 			rejected = errorResult("audit sink " + name + " unavailable: call rejected (blocking, fail_closed)")
 			call.end(s, audit.OutcomeAuditUnavailable, rejected)
 			return call, rejected, false

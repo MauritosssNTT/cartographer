@@ -27,9 +27,9 @@ func (s *Server) SetBlockingAuditSinks(sinks []*hooks.Sink) {
 // event, each bounded by its timeout. It runs in beginAuditCall, before the
 // handler, so outside the KB lock. A fail_closed sink that did not acknowledge
 // rejects the call; a fail_open one lets it go on (its tailer delivers later).
-func awaitBlockingSinks(sinks []*hooks.Sink, hash string) (rejectedBy string) {
+func awaitBlockingSinks(ctx context.Context, sinks []*hooks.Sink, hash string) (rejectedBy string) {
 	for _, sk := range sinks {
-		if err := sk.Await(context.Background(), hash); err != nil && sk.Hook().FailurePolicy == hooks.FailClosed {
+		if err := sk.Await(ctx, hash); err != nil && sk.Hook().FailurePolicy == hooks.FailClosed {
 			return sk.Hook().Name
 		}
 	}

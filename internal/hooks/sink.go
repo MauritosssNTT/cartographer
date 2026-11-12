@@ -43,8 +43,36 @@ type Sink struct {
 	wake       <-chan struct{}
 	cursorPath string
 
-	mu     sync.Mutex // one delivery at a time: the tailer and Await
+	turn   chan struct{} // one delivery at a time (the tailer, Await): a lock a deadline can give up on
 	cursor string
+	acked  ackRing // the hashes recently acknowledged, so Await knows its event is out
+}
+
+// ackRing remembers the last ackRingSize acknowledged hashes.
+const ackRingSize = 4096
+
+type ackRing struct {
+	mu   sync.Mutex
+	set  map[string]bool
+	ring []string
+	next int
+}
+
+func (a *ackRing) add(hash string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.set == nil {
+		a.set, a.ring = map[string]bool{}, make([]string, ackRingSize)
+	}
+	delete(a.set, a.ring[a.next])
+	a.ring[a.next], a.set[hash] = hash, true
+	a.next = (a.next + 1) % ackRingSize
+}
+
+func (a *ackRing) has(hash string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.set[hash]
 }
 
 // NewSink builds the sink of the named audit_sink hook. wake is signalled after
@@ -54,7 +82,7 @@ func (r *Registry) NewSink(name string, src SinkSource, wake <-chan struct{}, di
 	if !ok || e.Point != PointAuditSink {
 		return nil, fmt.Errorf("hook %q is not an audit_sink", name)
 	}
-	s := &Sink{reg: r, e: e, src: src, wake: wake,
+	s := &Sink{reg: r, e: e, src: src, wake: wake, turn: make(chan struct{}, 1),
 		cursorPath: filepath.Join(dir, "sink-"+strings.ReplaceAll(name, "/", ".")+".cursor")}
 	b, err := os.ReadFile(s.cursorPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -68,14 +96,15 @@ func (r *Registry) NewSink(name string, src SinkSource, wake <-chan struct{}, di
 func (s *Sink) Hook() Hook { return s.e.Hook }
 
 // Run delivers until ctx ends: at each wake-up and every 2 s, as many batches
-// as the chain has; a failure backs off from 1 s to 60 s. When ctx ends it
-// makes one last attempt bounded by SinkStopFlush.
+// as the chain has; a failure backs off from 1 s to 60 s, during which a
+// wake-up is ignored (an append must not turn the backoff into a retry per
+// append). When ctx ends it makes one last attempt bounded by SinkStopFlush.
 func (s *Sink) Run(ctx context.Context) {
 	backoff := time.Duration(0)
 	for {
-		wait := sinkTick
+		wait, wake := sinkTick, s.wake
 		if backoff > 0 {
-			wait = backoff
+			wait, wake = backoff, nil
 		}
 		t := time.NewTimer(wait)
 		select {
@@ -85,7 +114,7 @@ func (s *Sink) Run(ctx context.Context) {
 			_, _ = s.drain(fctx, "")
 			cancel()
 			return
-		case <-s.wake:
+		case <-wake:
 		case <-t.C:
 		}
 		t.Stop()
@@ -98,8 +127,9 @@ func (s *Sink) Run(ctx context.Context) {
 }
 
 // Await delivers the chain up to and including hash, bounded by the hook's
-// timeout: the blocking mode, called after the attempt event is appended and
-// outside the KB lock. An error means the hook did not acknowledge it in time.
+// timeout, waiting for a delivery already running included: the blocking
+// mode, called after the attempt event is appended and outside the KB lock.
+// An error means the hook did not acknowledge it in time.
 func (s *Sink) Await(ctx context.Context, hash string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.e.Timeout)
 	defer cancel()
@@ -108,33 +138,41 @@ func (s *Sink) Await(ctx context.Context, hash string) error {
 }
 
 // drain delivers batches until the chain is exhausted or, when until is set,
-// until the batch that holds it was acknowledged.
+// until until is acknowledged (by this drain or another). The delivery turn is
+// taken per batch, so a long backlog delivered by the tailer delays an Await by
+// one batch at most, and never past its deadline.
 func (s *Sink) drain(ctx context.Context, until string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	for {
-		events, gap, err := s.src(s.cursor, s.e.BatchSize)
-		if err != nil {
-			s.reg.logf("hook %s: read the audit chain: %v", s.e.Name, err)
-			return false, err
+		if until != "" && s.acked.has(until) {
+			return true, nil
 		}
-		if len(events) == 0 {
-			return true, nil // nothing left: until, if set, was already delivered
+		select {
+		case s.turn <- struct{}{}:
+		case <-ctx.Done():
+			return false, ctx.Err()
 		}
-		if gap {
-			s.reg.logf("hook %s: audit entries after the cursor were removed by retention; delivery resumes at the oldest retained entry", s.e.Name)
-		}
-		if err := s.deliver(ctx, events, gap); err != nil {
-			return false, err
-		}
-		if until != "" {
-			for _, ev := range events {
-				if ev.Hash == until {
-					return true, nil
-				}
-			}
+		done, err := s.batch(ctx)
+		<-s.turn
+		if err != nil || done {
+			return done, err
 		}
 	}
+}
+
+// batch delivers the next batch after the cursor; done when there was none.
+func (s *Sink) batch(ctx context.Context) (bool, error) {
+	events, gap, err := s.src(s.cursor, s.e.BatchSize)
+	if err != nil {
+		s.reg.logf("hook %s: read the audit chain: %v", s.e.Name, err)
+		return false, err
+	}
+	if len(events) == 0 {
+		return true, nil // nothing left: an until was already delivered
+	}
+	if gap {
+		s.reg.logf("hook %s: audit entries after the cursor were removed by retention; delivery resumes at the oldest retained entry", s.e.Name)
+	}
+	return false, s.deliver(ctx, events, gap)
 }
 
 // deliver posts one batch and, once acknowledged, moves the cursor.
@@ -161,6 +199,9 @@ func (s *Sink) deliver(ctx context.Context, events []SinkEvent, gap bool) error 
 		s.reg.logf("hook %s: persist the sink cursor: %v", s.e.Name, err)
 	}
 	s.cursor = last
+	for _, ev := range events {
+		s.acked.add(ev.Hash)
+	}
 	return nil
 }
 
