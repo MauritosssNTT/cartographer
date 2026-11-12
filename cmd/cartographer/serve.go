@@ -866,6 +866,7 @@ func serveHTTP(addr string, boot func(phase func(string)) kbBootstrap, authCfg c
 				log.Printf("warning: the embedded web UI is unusable, serving without it: %v", err)
 			} else {
 				multi.EnableWeb(static)
+				multi.SetAtlasURL(webui.URL(addr))
 				webMounted = true
 				log.Printf("Atlas UI on http://%s%s", displayAddr(addr), webui.MountPath)
 			}

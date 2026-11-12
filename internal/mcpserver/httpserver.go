@@ -339,6 +339,8 @@ type MultiKBServer struct {
 	surveyors surveyorStore
 	// components is the registry of expected components (components.go).
 	components componentRegistry
+	// atlasURL is where a browser opens the Atlas (SetAtlasURL).
+	atlasURL string
 	// extensions are the views, apps and plugins of GET /api/ui/v1/extensions
 	// (uiapi_extensions.go), set once before serving.
 	extensions extensionSet
@@ -355,6 +357,19 @@ type webMount struct {
 // it. Called by the HTTP server when web.enabled is on; never in stdio mode.
 func (m *MultiKBServer) EnableWeb(static http.Handler) {
 	m.web = &webMount{Static: static}
+}
+
+// SetAtlasURL records the browser address of the Atlas (webui.URL of the
+// listen address), which kb_status reports as ui_url (#1945). Call it before
+// serving; it is reported only while the bundle is mounted.
+func (m *MultiKBServer) SetAtlasURL(u string) { m.atlasURL = u }
+
+// servedAtlasURL is the Atlas address, "" unless EnableWeb mounted a bundle.
+func (m *MultiKBServer) servedAtlasURL() string {
+	if m == nil || m.web == nil || m.web.Static == nil {
+		return ""
+	}
+	return m.atlasURL
 }
 
 // APIPrefix is the public, versioned, read-only API.
@@ -425,6 +440,7 @@ func (m *MultiKBServer) MountKB(name string, setupFn func(s *Server)) {
 	srv.liveSurveyor = m.surveyors.hasLive
 	srv.SetPolicyKB(name)
 	srv.SetFeedback(m.feedback)
+	srv.atlasURL = m.servedAtlasURL
 	setupFn(srv)
 	m.servers[name] = srv
 	m.kbs = append(m.kbs, KBInfo{Name: name, Status: "normal"})

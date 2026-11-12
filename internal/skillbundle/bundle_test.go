@@ -152,6 +152,29 @@ func TestOpsSkillCarriesTheUpdateNoticeRules(t *testing.T) {
 	}
 }
 
+// TestOpsSkillPointsToTheAtlas guards #1945: asked to show a KB, the agent
+// gives kb_status's ui_url, and knows why it may be missing.
+func TestOpsSkillPointsToTheAtlas(t *testing.T) {
+	body, err := fs.ReadFile(FS, "bundled/cartographer-ops/SKILL.md")
+	if err != nil {
+		t.Fatalf("read cartographer-ops SKILL.md: %v", err)
+	}
+	text := string(body)
+	i := strings.Index(text, "## The Atlas")
+	if i < 0 {
+		t.Fatal("the ops skill has no Atlas section (#1945)")
+	}
+	section := text[i:]
+	if j := strings.Index(section[1:], "\n## "); j >= 0 {
+		section = section[:j+1]
+	}
+	for _, want := range []string{"`ui_url`", "`kb_status`", "stdio", "CARTOGRAPHER_WEB_ENABLED=false", "service status", "stopped"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("the Atlas section lost %q (#1945)", want)
+		}
+	}
+}
+
 // TestOpsSkillCarriesTheSetupInterview guards the first-time setup section
 // (D253): an agent setting up a machine must interview the user and preview
 // the plan instead of answering setup's questions itself.

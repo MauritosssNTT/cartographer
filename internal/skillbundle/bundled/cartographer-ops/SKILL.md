@@ -130,6 +130,16 @@ A KB syncs exactly when it has a remote, and every write is one commit: neither 
    from the KB's `paths.yaml` is fixed in the KB, not on the client: declare it there with a
    `~/`-anchored default so every machine resolves it with no configuration.
 
+## The Atlas
+
+The Atlas is the read-only browser view of the KBs: the graph, each concept with its links, the
+lint findings. When the user asks to see a KB, give them `ui_url` from `kb_status`: the link opens
+that KB (by default `http://127.0.0.1:39273/ui/?kb=<name>`). On the machine itself,
+`cartographer service status` prints the same address on its `ui:` line. No `ui_url` means this
+server serves no Atlas: it runs over stdio, or `CARTOGRAPHER_WEB_ENABLED=false` (`web.enabled`)
+turned it off, or the service is stopped (`cartographer service start`). Never tell the user
+there is no graphical view before checking.
+
 ## Upgrade
 
 Use the channel the binary came from; installing over it from a different one is how two

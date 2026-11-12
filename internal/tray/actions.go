@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/BeppeTemp/cartographer/internal/service"
+	"github.com/BeppeTemp/cartographer/internal/webui"
 )
 
 // openFn hands a URL or a file path to the operating system's "open". Tests
@@ -59,12 +60,6 @@ func hasDotSegment(p string) bool {
 		}
 	}
 	return false
-}
-
-// KBURL is the Atlas URL that opens one KB (the UI's ?kb= view state). The
-// name comes from /health: it is only ever a query value, escaped here.
-func KBURL(uiURL, kb string) string {
-	return uiURL + "?" + url.Values{"kb": {kb}}.Encode()
 }
 
 // OpenPath opens a file (the server log) with its associated program.
@@ -149,7 +144,7 @@ func (a *Actions) Handle(act Action) {
 		if act < ActionOpenKB || i >= len(kbs) || snap.UIURL == "" {
 			return
 		}
-		if err := OpenURL(KBURL(snap.UIURL, kbs[i])); err != nil {
+		if err := OpenURL(webui.KBURL(snap.UIURL, kbs[i])); err != nil {
 			a.logf("tray: open %s: %v", kbs[i], err)
 		}
 	}
