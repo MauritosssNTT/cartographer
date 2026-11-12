@@ -1,14 +1,19 @@
 package mcpserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/BeppeTemp/cartographer/internal/kb"
+	"github.com/BeppeTemp/cartographer/internal/okf"
 )
 
 // D1099: concept_write takes index_entry with the concept_new semantics, and
@@ -224,6 +229,114 @@ func TestIndexEntry_UnreadableAtEditTimeCarriesNoServerPath(t *testing.T) {
 		}
 		noRoot(t, k, text)
 	})
+}
+
+// readOnlyDir makes dir refuse new files, so the atomic write of the index in
+// it fails in os.CreateTemp with an *fs.PathError that carries the absolute
+// data directory. It skips where permission bits do not bind: Windows, and a
+// process that is root.
+func readOnlyDir(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory cannot be made read-only through its mode on Windows")
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	probe, err := os.CreateTemp(dir, "probe")
+	if err == nil {
+		probe.Close()
+		os.Remove(probe.Name())
+		t.Skip("the process can write to a read-only directory (root?)")
+	}
+}
+
+// The index file that cannot be written (PatchIndex fails with a path error)
+// reaches the caller as a note, and neither the index_entry note nor the one
+// of a delete carries the server's data directory (#1911).
+func TestIndexEntry_UnwritableIndexCarriesNoServerPath(t *testing.T) {
+	noRoot := func(t *testing.T, k *kb.KB, text string) {
+		t.Helper()
+		if !strings.Contains(text, "permission denied") {
+			t.Fatalf("want the write failure in the note: %s", text)
+		}
+		for _, root := range []string{k.Root, k.DataRoot()} {
+			if strings.Contains(text, root) {
+				t.Fatalf("the result carries the server path %q: %s", root, text)
+			}
+		}
+	}
+
+	t.Run("append", func(t *testing.T) {
+		k := setupTestKB(t)
+		if err := os.RemoveAll(filepath.Join(k.Root, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		seedIndexMaps(t, k, mapFiles("pages", ""))
+		s := New("test")
+		RegisterKBTools(s, k, Deps{})
+		indexPatchHook = func(mapName string) error { readOnlyDir(t, filepath.Join(k.DataRoot(), mapName)); return nil }
+		t.Cleanup(func() { indexPatchHook = nil })
+		text, isErr := callJSON(t, s, adminCtx, "concept_write", cwArgs("pages/fresh", "Fresh", "# Fresh\n", map[string]any{"index_entry": true}))
+		if isErr {
+			t.Fatalf("want a note, got an error: %s", text)
+		}
+		noRoot(t, k, text)
+	})
+
+	t.Run("remove", func(t *testing.T) {
+		k := setupTestKB(t)
+		files := mapFiles("pages", "")
+		files["pages/gone.md"] = "---\ntype: Note\ntitle: gone\n---\n# gone\n"
+		seedIndexMaps(t, k, files)
+		idx := filepath.Join(k.DataRoot(), "pages", "index.md")
+		data, err := os.ReadFile(idx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(idx, append(data, []byte("\n- [gone](gone.md) - gone\n")...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		readOnlyDir(t, filepath.Dir(idx))
+		removed, _, err := removeCuratedEntry(k, "pages", "pages/gone")
+		if removed || err == nil {
+			t.Fatalf("want a write failure, got removed=%v err=%v", removed, err)
+		}
+		noRoot(t, k, err.Error())
+	})
+}
+
+// The scrubbed index errors keep their chain: a stale write stays
+// okf.ErrStaleWrite through applyIndexEntries' wrapping, and batchWriteError
+// still maps it to stale_write, while the path error stays reachable and its
+// text loses the data directory.
+func TestScrubErr_KeepsTheChainAndHidesThePath(t *testing.T) {
+	k := setupTestKB(t)
+	root := k.DataRoot()
+	if scrubErr(nil, root) != nil {
+		t.Fatal("scrubErr(nil) must be nil")
+	}
+
+	stale := scrubErr(fmt.Errorf("%w", okf.ErrStaleWrite), k.Root, root)
+	wrapped := fmt.Errorf("batch op 0 (pages/fresh): %w", fmt.Errorf("pages/index.md: %w", stale))
+	if !errors.Is(wrapped, okf.ErrStaleWrite) {
+		t.Fatalf("a stale index write lost its identity: %v", wrapped)
+	}
+	ops := []kb.BatchWriteOp{{ID: "pages/fresh"}}
+	if msg := batchWriteError(context.Background(), k, ops, wrapped); !strings.HasPrefix(msg, "stale_write: ") {
+		t.Errorf("a stale index write must map to stale_write: %q", msg)
+	}
+
+	pe := &fs.PathError{Op: "open", Path: filepath.Join(root, "pages", ".tmp-1"), Err: fs.ErrPermission}
+	scrubbed := scrubErr(fmt.Errorf("PatchIndex: %w", pe), k.Root, root)
+	if strings.Contains(scrubbed.Error(), root) {
+		t.Errorf("the text carries the data directory: %q", scrubbed)
+	}
+	var got *fs.PathError
+	if !errors.Is(scrubbed, fs.ErrPermission) || !errors.As(scrubbed, &got) {
+		t.Errorf("the chain of the original is lost: %v", scrubbed)
+	}
 }
 
 // The index edit failing after the write is a note, not an error; the KB is

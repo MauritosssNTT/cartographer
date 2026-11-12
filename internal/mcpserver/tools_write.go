@@ -2592,8 +2592,11 @@ func removeCuratedEntryAt(k *kb.KB, mapName string, id okf.ConceptID) (removed b
 	if !removed {
 		return false, kept, keptLine, nil
 	}
+	// A write failure is an *fs.PathError with the data directory in it, and the
+	// callers print the error into a note: scrubErr keeps the chain (a stale
+	// write stays okf.ErrStaleWrite) and hides the path.
 	_, err = k.PatchIndex(mapName, hash, joinIndex(fmRaw, hasFM, newBody))
-	return err == nil, kept, keptLine, err
+	return err == nil, kept, keptLine, scrubErr(err, k.Root, k.DataRoot())
 }
 
 // dropEntryLines is the line removal of removeCuratedEntry on an index body
@@ -2793,8 +2796,10 @@ func appendCuratedEntries(k *kb.KB, mapName, heading string, ids []okf.ConceptID
 	} else {
 		body = strings.TrimRight(body, "\n") + "\n\n" + heading + "\n\n" + block + "\n"
 	}
+	// As in removeCuratedEntryAt: the text loses the data directory, the chain
+	// stays (applyIndexEntries and batchWriteError test it for ErrStaleWrite).
 	_, err = k.PatchIndex(mapName, hash, joinIndex(fmRaw, hasFM, body))
-	return content, err
+	return content, scrubErr(err, k.Root, k.DataRoot())
 }
 
 // insertUnderHeading puts block at the end of heading's section: after the
@@ -2932,7 +2937,7 @@ func applyIndexEntries(k *kb.KB, pending []pendingIndexEntry) error {
 				_, herr = k.PatchIndex(u.mapName, hash, u.before)
 			}
 			if herr != nil {
-				err = fmt.Errorf("%w (and restoring %s/index.md failed: %v)", err, u.mapName, herr)
+				err = fmt.Errorf("%w (and restoring %s/index.md failed: %s)", err, u.mapName, relPathErr(herr, k.Root, k.DataRoot()))
 			}
 		}
 		return err
