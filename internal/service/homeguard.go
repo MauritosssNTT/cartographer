@@ -97,13 +97,16 @@ func samePath(a, b string) bool {
 	return clean(a) == clean(b)
 }
 
-// guardScheduler refuses a scheduler command under a sandboxed HOME.
+// guardScheduler refuses a scheduler command under a sandboxed HOME. The error
+// names what was refused (the command, whatever the caller was doing with it:
+// registering a unit, probing a task, reading a file through interop), never
+// what the caller's operation would have done: a read has no unit files.
 func guardScheduler(name string) error {
 	if !schedulerCommands[filepath.Base(name)] {
 		return nil
 	}
 	if sandboxed, env, acct := sandboxedHome(); sandboxed {
-		return fmt.Errorf("%w (HOME=%s, account home %s): the unit files are written, but nothing is registered with the per-user scheduler", errSandboxHome, env, acct)
+		return fmt.Errorf("%w (HOME=%s, account home %s): %s was not run, so the per-user scheduler was not touched", errSandboxHome, env, acct, filepath.Base(name))
 	}
 	return nil
 }
