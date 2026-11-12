@@ -70,7 +70,8 @@ captured value with a here-string, `grep -q … <<<"$x"`, never a pipe.
 a 300 KB body carrying the needle on line 1, and fails when its control (the old
 pipe form) stops hitting SIGPIPE. `TestShellScriptsNoPipeIntoGrepQuiet`
 (`internal/repodocs`) refuses a pipeline that ends in a quiet grep (`-q`/`--quiet`,
-flags in any position, `command grep`, the `grep` on the next line after a `|`) in
+flags in any position, `command`/`env`/`xargs grep`, `|&`, a group after the
+pipe such as `(grep -q …)` or `{ grep -q …; }`, the `grep` on the next line after a `|`) in
 every script that runs with pipefail: all of `test/e2e` and `test/lib`, and any
 other script under `test/` that sets it (the POSIX sh suites in `test/install` do
 not). The line that shows the trap on purpose carries `e2e-pipe-ok`, honoured only

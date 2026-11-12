@@ -32,9 +32,11 @@ type shellCommand struct {
 // shellCommands splits one logical line into its commands. It is a scanner,
 // not a shell parser: quotes are opaque (a `|` or `;` inside them separates
 // nothing), `;`, `&`, `&&`, `||`, parentheses and backticks end a command, a
-// single `|` ends it and marks the next one as piped, and an unquoted `#` at the
-// start of a word ends the line. That is enough to tell `a | grep "x|y" -q`
-// from `a || grep -q x`.
+// single `|` or a `|&` ends it and marks the next one as piped, and an unquoted
+// `#` at the start of a word ends the line. A group opened right after a pipe
+// (`a | (grep -q x)`, `a | { grep -q x; }`) and a leading `!` are not commands
+// of their own: the command inside is still the pipeline's last element, so it
+// stays piped. That is enough to tell `a | grep "x|y" -q` from `a || grep -q x`.
 func shellCommands(line string) []shellCommand {
 	var (
 		cmds    []shellCommand
@@ -46,7 +48,11 @@ func shellCommands(line string) []shellCommand {
 		rs      = []rune(line)
 		endWord = func() {
 			if inWord {
-				cur.words = append(cur.words, word.String())
+				w := word.String()
+				// A lone `{` or `!` that opens a command is syntax, not the command.
+				if len(cur.words) > 0 || (w != "{" && w != "!") {
+					cur.words = append(cur.words, w)
+				}
 				word.Reset()
 				inWord = false
 			}
@@ -92,13 +98,20 @@ func shellCommands(line string) []shellCommand {
 		case c == ' ' || c == '\t':
 			endWord()
 		case c == '|':
-			if i+1 < len(rs) && rs[i+1] == '|' {
+			switch {
+			case i+1 < len(rs) && rs[i+1] == '|':
 				i++
 				endCmd(false)
-			} else {
+			case i+1 < len(rs) && rs[i+1] == '&': // `|&` pipes stderr too
+				i++
+				endCmd(true)
+			default:
 				endCmd(true)
 			}
-		case c == ';' || c == '&' || c == '(' || c == ')' || c == '`':
+		case c == '(':
+			endWord()
+			endCmd(len(cur.words) == 0 && cur.piped) // `a | (grep -q x)` stays piped
+		case c == ';' || c == '&' || c == ')' || c == '`':
 			endCmd(false)
 		default:
 			word.WriteRune(c)
@@ -109,22 +122,46 @@ func shellCommands(line string) []shellCommand {
 	return cmds
 }
 
-// isQuietGrep: `[command|builtin|exec] [path/]grep|egrep|fgrep` with a quiet
-// flag in any position (-q, a cluster such as -Eq or -qi, --quiet, --silent)
-// before a `--`.
-func isQuietGrep(words []string) bool {
-	for len(words) > 0 && (words[0] == "command" || words[0] == "builtin" || words[0] == "exec") {
-		words = words[1:]
+// grepWrappers run the command that follows them; `a | xargs grep -q x` ends
+// in that grep as much as `a | grep -q x` does.
+var grepWrappers = map[string]bool{"command": true, "builtin": true, "exec": true, "env": true, "xargs": true}
+
+func isGrepName(w string) bool {
+	switch path.Base(w) {
+	case "grep", "egrep", "fgrep":
+		return true
 	}
+	return false
+}
+
+// isQuietGrep: `[wrapper ...] [path/]grep|egrep|fgrep` (a wrapper is command,
+// builtin, exec, env or xargs, with its own options between) with a quiet flag
+// in any position (-q, a cluster such as -Eq or -qi, --quiet, --silent) before
+// a `--`. `command -v grep` looks the name up and runs nothing.
+func isQuietGrep(words []string) bool {
 	if len(words) == 0 {
 		return false
 	}
-	switch path.Base(words[0]) {
-	case "grep", "egrep", "fgrep":
-	default:
-		return false
+	rest := words[1:]
+	if !isGrepName(words[0]) {
+		if !grepWrappers[path.Base(words[0])] {
+			return false
+		}
+		if words[0] == "command" && len(rest) > 0 && (rest[0] == "-v" || rest[0] == "-V") {
+			return false
+		}
+		found := false
+		for j, w := range rest {
+			if isGrepName(w) {
+				rest, found = rest[j+1:], true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
 	}
-	for _, w := range words[1:] {
+	for _, w := range rest {
 		if w == "--" {
 			return false
 		}
@@ -135,22 +172,40 @@ func isQuietGrep(words []string) bool {
 	return false
 }
 
-// stripShellComment drops the comment of one physical line, if any.
+// stripShellComment drops the comment of one physical line, if any. It keeps
+// the quote state of shellCommands (a backslash escapes the next character
+// outside quotes and inside double quotes, so `\"` neither closes a string nor
+// opens one) and calls a `#` a comment where shellCommands does: at the start of
+// a word.
 func stripShellComment(line string) string {
 	var single, double bool
+	wordStart := true
 	rs := []rune(line)
-	for i, c := range rs {
+	for i := 0; i < len(rs); i++ {
+		c := rs[i]
 		switch {
 		case single:
 			single = c != '\''
 		case double:
-			double = c != '"'
+			switch {
+			case c == '"':
+				double = false
+			case c == '\\' && i+1 < len(rs):
+				i++
+			}
 		case c == '\'':
-			single = true
+			single, wordStart = true, false
 		case c == '"':
-			double = true
-		case c == '#' && (i == 0 || rs[i-1] == ' ' || rs[i-1] == '\t'):
+			double, wordStart = true, false
+		case c == '\\' && i+1 < len(rs):
+			i++
+			wordStart = false
+		case c == '#' && wordStart:
 			return string(rs[:i])
+		case c == ' ' || c == '\t' || c == ';' || c == '&' || c == '|' || c == '(' || c == ')' || c == '`':
+			wordStart = true
+		default:
+			wordStart = false
 		}
 	}
 	return line
@@ -221,6 +276,19 @@ func TestPipeIntoQuietGrepShapes(t *testing.T) {
 		"backslash before pipe":   "a \\\n  | grep -q foo",
 		"in a subshell":           `( a | grep -q foo )`,
 		"marker outside selftest": `a | grep -q foo # ` + pipeMarker,
+		"stderr piped too":        `a |& grep -q foo`,
+		"group after a pipe":      `a | (grep -q foo)`,
+		"group, no space":         `a |(grep -q foo)`,
+		"brace group":             `a | { grep -q foo; }`,
+		"negated after a pipe":    `a | ! grep -q foo`,
+		"xargs":                   `a | xargs grep -q foo`,
+		"xargs with options":      `a | xargs -n1 -I{} grep -q foo {}`,
+		"env":                     `a | env LC_ALL=C grep -q foo`,
+		"exec":                    `a | exec grep -q foo`,
+		"command and builtin":     `a | command command grep -q foo`,
+		"escaped quote, then #":   `echo "a \" # b" | grep -q foo`,
+		"escaped hash":            `echo a \# b | grep -q foo`,
+		"escaped space, then #":   `echo a\ #b | grep -q foo`,
 	}
 	for name, src := range flagged {
 		if got := pipeIntoQuietGrep(src, false); len(got) != 1 || got[0] != 1 {
@@ -245,6 +313,14 @@ func TestPipeIntoQuietGrepShapes(t *testing.T) {
 		"trailing comment":        `a | b # | grep -q c`,
 		"pipe then other":         "a |\n  sort",
 		"not a flag":              `echo "$x" | grep -E 'q' -A2`,
+		"stderr piped, not grep":  `a |& tee f`,
+		"group of other commands": `a | (cat)`,
+		"group, then own command": `a | (b; grep -q foo "$f")`,
+		"brace group, then grep":  `a | { b; }; grep -q foo "$f"`,
+		"xargs of other commands": `a | xargs -n1 echo`,
+		"command -v grep":         `a | command -v grep`,
+		"escaped quote, comment":  `echo "a \" b" # | grep -q foo`,
+		"hash inside a word":      `echo a#b | grep foo`,
 	}
 	for name, src := range fine {
 		if got := pipeIntoQuietGrep(src, false); len(got) != 0 {
