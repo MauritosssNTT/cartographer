@@ -370,7 +370,7 @@ with the reason); the steps of the scenario print as `step N <verb>`.
 | `fetch` | `fetch` answers every key it is asked (skipped when it is not declared or every entry came with content) |
 | `protocol` | an exec script exits 64 with no output on an unknown verb and on another protocol number (skipped for a Starlark recipe) |
 | `secrets` | no `env` test value of 4 bytes or more appears in an entry, a content or an error detail |
-| `connector` | a stdio connector starts, offers every tool of its allowlist within the schema and name caps with a name model providers accept (`[a-zA-Z0-9_-]`, at most 64 characters once aliased), answers its calls capped, sees only the variables its descriptor lists, and leaks no `env` test value into a result or an error; the calls print as `call N <tool>` |
+| `connector` | a stdio connector starts, offers every tool of its allowlist within the schema and name caps with a name model providers accept (`[a-zA-Z0-9_-]`, at most 64 characters once aliased), answers its calls capped, and leaks no `env` test value into a result or an error (that the child sees only the variables its descriptor lists is enforced by the Surveyor's own process start, not judged here); the calls print as `call N <tool>` |
 
 `examples/plugin-recipe` is a Starlark recipe with a recorded scenario that passes every check that applies to it (it is run by a Go test): copy it as a starting point.
 
