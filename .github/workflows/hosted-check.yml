@@ -9,9 +9,9 @@ name: hosted-check
 # dispatch for a workflow file that exists on the default branch.
 #
 # Two jobs run in parallel: `check` (Linux, `make check-run`) and `windows`, the Windows leg of
-# the train gate (scripts/signoff.sh): the sharded `go test` of the packages `make check` lists
-# in win_pkgs (scripts/affected-pkgs.sh --code), so a failure only Windows sees (#1935) shows up
-# before the change is queued. It is skipped when the change touches no Go code (win_pkgs empty).
+# the train gate (scripts/signoff.sh): the sharded `go test` of the packages scripts/hosted-check.sh
+# puts in win_pkgs (scripts/affected-pkgs.sh --code), so a failure only Windows sees (#1935) shows
+# up before the change is queued. It is skipped when the change touches no Go code (win_pkgs empty).
 on:
   workflow_dispatch:
     inputs:

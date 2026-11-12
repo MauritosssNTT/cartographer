@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # hosted-check.sh — `make check-run` on a GitHub-hosted runner (CHECK_MAKE=./scripts/hosted-check.sh).
 #
-#   hosted-check.sh check-run CHECK_PKGS="<list>" [CHECK_WIN_PKGS="<list>"] [CHECK_E2E=1]
+#   hosted-check.sh check-run CHECK_PKGS="<list>" [CHECK_E2E=1]
 #
 # What `make check` hands to CHECK_MAKE. The worktree state (uncommitted changes of tracked files
 # and staged new files; never untracked ones) becomes a temporary commit on top of HEAD, built with plumbing
@@ -11,16 +11,21 @@
 # PR and never lands. Pushing needs write access: a contributor's push is refused (exit 75) and
 # the check runs locally.
 #
-# Two legs run in parallel in the dispatched run: Linux (`make check-run`) and, when
-# CHECK_WIN_PKGS is not empty, Windows (the sharded `go test` of the packages the train gate's
-# Windows leg covers: `make check` computes them with `affected-pkgs.sh --code`). Both are read
-# from the one poll of the run; a red check names the red leg(s) and prints each one's log excerpt.
+# Two legs run in parallel in the dispatched run: Linux (`make check-run`) and, when the Windows
+# list is not empty, Windows (the sharded `go test` of the packages the train gate's Windows leg
+# covers). The script computes that list itself, from the same changed paths `make check` uses
+# (`affected-pkgs.sh --changed | affected-pkgs.sh --code`): `make check` hands it nothing but
+# CHECK_PKGS. A list that cannot be computed is exit 1 with the reason, never 75. Both legs are
+# read from the one poll of the run; a red check names the red leg(s) and prints each one's log
+# excerpt.
 #
 # Exit: 0 green, 1 red or cancelled or timed out, 2 bad call, 75 GitHub cannot run it (gh missing
 # or unauthenticated, push or dispatch refused, run never appeared, network lost). Never 75 for a
 # red check (D1704). The dispatch needs hosted-check.yml on the default branch: before the first
 # landing it fails with 75.
 #
+#   CHECK_WIN_PKGS=<list>         test seam: a list in the environment (empty: no Windows leg)
+#                                 replaces the computation, which needs the checkout's upstream/main
 #   HOSTED_CHECK_DRY=1            build the commit and print the branch, push nothing
 #   HOSTED_CHECK_POLL=15          seconds before the first poll of the run; doubles after each poll
 #   HOSTED_CHECK_POLL_MAX=60      ceiling of that back-off (a run costs ~15 calls, not ~720 an hour:
@@ -33,7 +38,7 @@
 #   HOSTED_CHECK_TAIL=150         lines of the failed log printed
 set -euo pipefail
 
-usage() { echo "usage: hosted-check.sh check-run [CHECK_PKGS=<packages>] [CHECK_WIN_PKGS=<packages>] [CHECK_E2E=1]" >&2; exit 2; }
+usage() { echo "usage: hosted-check.sh check-run [CHECK_PKGS=<packages>] [CHECK_E2E=1]" >&2; exit 2; }
 note() { echo "hosted-check: $*" >&2; }
 unavailable() { note "$*"; exit 75; }
 
@@ -41,29 +46,35 @@ unavailable() { note "$*"; exit 75; }
 [ "${1:-}" = check-run ] || usage
 shift
 pkgs=
-winpkgs=
 e2e=false
 for a in "$@"; do
   case "$a" in
     CHECK_PKGS=*) pkgs=${a#CHECK_PKGS=} ;;
-    CHECK_WIN_PKGS=*) winpkgs=${a#CHECK_WIN_PKGS=} ;;
     CHECK_E2E=1) e2e=true ;;
     *) usage ;;
   esac
 done
 # Whole-string match (a newline is not in the class), and no word may start with `-`: the list
 # is expanded unquoted by make, where a newline starts a command and `-exec=...` a go test flag.
-for list in "$pkgs" "$winpkgs"; do
-  [[ "$list" =~ ^[A-Za-z0-9_./\ -]*$ ]] || { note "bad package list"; exit 2; }
-  for w in $list; do
+check_list() {
+  [[ "$1" =~ ^[A-Za-z0-9_./\ -]*$ ]] || { note "bad package list"; exit 2; }
+  local w
+  for w in $1; do
     if [[ "$w" == -* ]]; then note "bad package list: $w looks like a flag"; exit 2; fi
   done
-done
+}
+check_list "$pkgs"
+# The test seam: set (even empty) it replaces the computation of step 3.
+winpkgs=${CHECK_WIN_PKGS-} win_given=${CHECK_WIN_PKGS+1}
+check_list "$winpkgs"
 
 dry=${HOSTED_CHECK_DRY:-}
 poll=${HOSTED_CHECK_POLL:-15}
 poll_max=${HOSTED_CHECK_POLL_MAX:-60}
-here=${BASH_SOURCE[0]%/*}
+# Absolute: the script runs from any directory and later changes to the toplevel.
+src=${BASH_SOURCE[0]}
+case "$src" in */*) here=${src%/*} ;; *) here=. ;; esac
+here=$(cd "$here" && pwd)
 
 # 2. Preconditions (75: GitHub cannot run it).
 if [ -z "$dry" ]; then
@@ -109,6 +120,17 @@ if [ -n "$untracked" ]; then
     exit 2
   fi
 fi
+
+# The packages of the Windows leg: what the train gate's leg runs (affected-pkgs.sh --code) over the
+# paths `make check` selects its packages from. Two steps, each status checked: a pipe into the
+# list would hide a failure as an empty list, and a check that tests nothing must not pass.
+if [ -z "$win_given" ]; then
+  changed=$("$here/affected-pkgs.sh" --changed) || { note "cannot compute the changed paths (see above): not running a check that would test nothing"; exit 1; }
+  winpkgs=$(printf '%s\n' "$changed" | "$here/affected-pkgs.sh" --code) || { note "cannot compute the Windows packages (see above)"; exit 1; }
+  winpkgs=${winpkgs//$'\n'/ }
+  check_list "$winpkgs"
+fi
+
 tree=$(GIT_INDEX_FILE=$tmp git write-tree)
 if [ "$tree" = "$(git rev-parse 'HEAD^{tree}')" ]; then
   sha=$(git rev-parse HEAD)

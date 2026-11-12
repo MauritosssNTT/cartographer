@@ -23,14 +23,21 @@ func stubBin(t *testing.T, scripts map[string]string) string {
 }
 
 // runHostedCheck runs scripts/hosted-check.sh with PATH reduced to path and returns the exit code.
+// The Windows list is the empty one unless env sets CHECK_WIN_PKGS: the toy repositories here have no
+// upstream/main for the script to compute it from (TestHostedCheckComputesWindowsPackages does).
 func runHostedCheck(t *testing.T, dir, path string, env []string, args ...string) (int, string) {
 	t.Helper()
-	root := repoRoot(t)
+	return runHostedCheckScript(t, filepath.Join(repoRoot(t), "scripts/hosted-check.sh"), dir, path, append([]string{"CHECK_WIN_PKGS="}, env...), args...)
+}
+
+// runHostedCheckScript runs the script at the given path (absolute or relative to dir), env as is.
+func runHostedCheckScript(t *testing.T, script, dir, path string, env []string, args ...string) (int, string) {
+	t.Helper()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Skip("bash not on PATH")
 	}
-	cmd := exec.Command(bash, append([]string{filepath.Join(root, "scripts/hosted-check.sh")}, args...)...)
+	cmd := exec.Command(bash, append([]string{script}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = append([]string{"PATH=" + path, "HOME=" + t.TempDir()}, env...)
 	out, err := cmd.CombinedOutput()
@@ -55,6 +62,7 @@ func TestHostedCheckRejects(t *testing.T) {
 		{"check-run", "CHECK_PKGS=$(x)"},
 		{"check-run", "CHECK_PKGS=./a`x`"},
 		{"check-run", "CHECK_FOO=1"},
+		{"check-run", "CHECK_PKGS=./a", "CHECK_WIN_PKGS=./a"}, // the script computes it: only the environment overrides
 		{"check-run", "CHECK_PKGS=./a\nrm -rf x"},
 		{"check-run", "CHECK_PKGS=./a\r./b"},
 		{"check-run", "CHECK_PKGS=-exec=/bin/x"},
@@ -509,8 +517,8 @@ func readFileAbs(t *testing.T, p string) string {
 	return string(b)
 }
 
-// The Windows leg of the train gate (#1935): `make check` hands the packages to the runner as
-// CHECK_WIN_PKGS, the script validates them like CHECK_PKGS, dispatches them as win_pkgs and, when the
+// The Windows leg of the train gate (#1935): the script takes the packages from the environment as
+// CHECK_WIN_PKGS (the seam), the script dispatches them as win_pkgs and, when the
 // run is red, names the red leg(s) with each one's log excerpt, from the one poll that gave the verdict.
 func TestHostedCheckWindowsLeg(t *testing.T) {
 	needBash(t)
@@ -557,9 +565,9 @@ func TestHostedCheckWindowsLeg(t *testing.T) {
 			run(repo, "remote", "add", "origin", bare)
 			stubs := stubBin(t, map[string]string{"gh": ghStub})
 			path := stubs + string(os.PathListSeparator) + filepath.Dir(git) + string(os.PathListSeparator) + "/usr/bin" + string(os.PathListSeparator) + "/bin"
-			env := append([]string{"GH_STATE=" + state, "GH_CONCL=" + c.concl, "GH_JOBS=" + c.jobs, "GH_LOG=" + log,
+			env := append([]string{"CHECK_WIN_PKGS=./a ./b", "GH_STATE=" + state, "GH_CONCL=" + c.concl, "GH_JOBS=" + c.jobs, "GH_LOG=" + log,
 				"HOSTED_CHECK_POLL=0", "HOSTED_CHECK_DISPATCH_POLL=0"}, gitEnv...)
-			code, out := runHostedCheck(t, repo, path, env, "check-run", "CHECK_PKGS=./a", "CHECK_WIN_PKGS=./a ./b")
+			code, out := runHostedCheck(t, repo, path, env, "check-run", "CHECK_PKGS=./a")
 			if code != c.code {
 				t.Fatalf("exit %d, want %d:\n%s", code, c.code, out)
 			}
@@ -580,12 +588,13 @@ func TestHostedCheckWindowsLeg(t *testing.T) {
 	}
 }
 
-// The Windows list is validated before any git or gh call, like CHECK_PKGS, and shown by the dry run.
+// The Windows list of the environment is validated before any git or gh call, like CHECK_PKGS, and
+// shown by the dry run.
 func TestHostedCheckWindowsListIsValidated(t *testing.T) {
 	needBash(t)
 	stubs := stubBin(t, map[string]string{"git": "exit 99", "gh": "exit 99"})
 	for _, win := range []string{"./a;rm", "$(x)", "./a`x`", "./a\nrm -rf x", "-exec=/bin/x", "./a -exec=/bin/x"} {
-		code, out := runHostedCheck(t, repoRoot(t), stubs, nil, "check-run", "CHECK_PKGS=./a", "CHECK_WIN_PKGS="+win)
+		code, out := runHostedCheck(t, repoRoot(t), stubs, []string{"CHECK_WIN_PKGS=" + win}, "check-run", "CHECK_PKGS=./a")
 		if code != 2 || !strings.Contains(out, "bad package list") {
 			t.Errorf("CHECK_WIN_PKGS=%q: exit %d, want 2 with %q\n%s", win, code, "bad package list", out)
 		}
@@ -611,7 +620,7 @@ func TestHostedCheckWindowsListIsValidated(t *testing.T) {
 		}
 	}
 	path := filepath.Dir(git) + string(os.PathListSeparator) + "/usr/bin" + string(os.PathListSeparator) + "/bin"
-	code, out := runHostedCheck(t, repo, path, append([]string{"HOSTED_CHECK_DRY=1"}, gitEnv...), "check-run", "CHECK_PKGS=./a", "CHECK_WIN_PKGS=./a ./b")
+	code, out := runHostedCheck(t, repo, path, append([]string{"HOSTED_CHECK_DRY=1", "CHECK_WIN_PKGS=./a ./b"}, gitEnv...), "check-run", "CHECK_PKGS=./a")
 	if code != 0 || !strings.Contains(out, "win_pkgs='./a ./b'") {
 		t.Errorf("dry run: exit %d, want 0 naming the Windows packages:\n%s", code, out)
 	}
@@ -664,22 +673,87 @@ func TestHostedCheckWorkflowHasWindowsLeg(t *testing.T) {
 	}
 }
 
-// `make check` hands the Windows packages (affected-pkgs.sh --code, the train gate's list) to the
-// hosted runner only; any other CHECK_MAKE keeps the arguments it always got.
-func TestCheckPassesWindowsPackagesToHosted(t *testing.T) {
-	mk := readFile(t, repoRoot(t), "Makefile")
-	if !strings.Contains(mk, "\nCHECK_WIN_LEG = $(findstring hosted-check.sh,$(CHECK_MAKE))\n") {
-		t.Error("CHECK_WIN_LEG is not set from the hosted-check.sh runner only")
+// The script computes the Windows packages itself, from the same changed paths `make check` selects its
+// packages from (`affected-pkgs.sh --changed`, then `--code` over them): the Makefile hands it nothing but
+// CHECK_PKGS. A copy of the script runs beside a stub affected-pkgs.sh in a toy repository, from a
+// subdirectory and by a relative path: the stub is found through an absolute directory, after the cd.
+func TestHostedCheckComputesWindowsPackages(t *testing.T) {
+	needBash(t)
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
 	}
-	m := regexp.MustCompile(`(?m)^check:.*\n((?:\t.*\n)+)`).FindStringSubmatch(mk)
-	if m == nil {
-		t.Fatal("no check recipe")
+	gitEnv := []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_AUTHOR_NAME=u", "GIT_AUTHOR_EMAIL=u@example.com", "GIT_COMMITTER_NAME=u", "GIT_COMMITTER_EMAIL=u@example.com"}
+	script := readFile(t, repoRoot(t), "scripts/hosted-check.sh")
+	// The stub answers --changed with $AFF_CHANGED (failing when $AFF_FAIL is changed) and --code by
+	// recording its stdin and printing $AFF_CODE (failing when $AFF_FAIL is code).
+	const stub = `case "$1" in
+--changed) [ "$AFF_FAIL" != changed ] || { echo "stub: no merge-base" >&2; exit 1; }; printf '%b' "$AFF_CHANGED" ;;
+--code) cat > "$AFF_STDIN"; [ "$AFF_FAIL" != code ] || { echo "stub: go list failed" >&2; exit 1; }; printf '%b' "$AFF_CODE" ;;
+*) exit 99 ;;
+esac`
+	cases := []struct {
+		name, fail, code string
+		env              []string
+		wantExit         int
+		want, notWant    []string
+	}{
+		{"computed from the changed paths", "", `./a\n./b\n`, nil, 0, []string{"win_pkgs='./a ./b'"}, nil},
+		{"nothing to test on Windows", "", "", nil, 0, []string{"win_pkgs=''"}, nil},
+		{"the changed paths cannot be computed", "changed", `./a\n`, nil, 1, []string{"cannot compute the changed paths", "stub: no merge-base"}, []string{"would push"}},
+		{"the packages cannot be computed", "code", `./a\n`, nil, 1, []string{"cannot compute the Windows packages", "stub: go list failed"}, []string{"would push"}},
+		{"a computed flag-like word is refused", "", `./a\n-exec=/bin/x\n`, nil, 2, []string{"bad package list"}, []string{"would push"}},
+		{"the environment replaces the computation", "changed", "", []string{"CHECK_WIN_PKGS=./z"}, 0, []string{"win_pkgs='./z'"}, []string{"stub:"}},
+		{"an empty environment list means no Windows leg", "changed", "", []string{"CHECK_WIN_PKGS="}, 0, []string{"win_pkgs=''"}, []string{"stub:"}},
 	}
-	rec := m[1]
-	if !strings.Contains(rec, `$(if $(CHECK_WIN_LEG),win=$$(printf '%s\n' "$$changed" | scripts/affected-pkgs.sh --code)`) {
-		t.Error("check does not compute the Windows packages with affected-pkgs.sh --code over the changed paths")
-	}
-	if !strings.Contains(rec, `$(CHECK_MAKE) check-run CHECK_PKGS="$$pkgs" $(if $(CHECK_WIN_LEG),CHECK_WIN_PKGS="$$win")`) {
-		t.Error("check does not hand CHECK_WIN_PKGS to CHECK_MAKE (hosted only)")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			repo, state := t.TempDir(), t.TempDir()
+			run := func(args ...string) {
+				cmd := exec.Command(git, args...)
+				cmd.Dir = repo
+				cmd.Env = append(os.Environ(), gitEnv...)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+			}
+			if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(repo, "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, body := range map[string]string{"scripts/hosted-check.sh": script, "scripts/affected-pkgs.sh": "#!/bin/sh\n" + stub + "\n"} {
+				if err := os.WriteFile(filepath.Join(repo, name), []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run("init", "-q", "-b", "main")
+			run("add", "scripts")
+			run("commit", "-q", "-m", "init")
+			path := filepath.Dir(git) + string(os.PathListSeparator) + "/usr/bin" + string(os.PathListSeparator) + "/bin"
+			env := append([]string{"HOSTED_CHECK_DRY=1", "AFF_FAIL=" + c.fail, `AFF_CHANGED=a.go\nb.md\n`, "AFF_CODE=" + c.code,
+				"AFF_STDIN=" + filepath.Join(state, "stdin")}, gitEnv...)
+			code, out := runHostedCheckScript(t, "../scripts/hosted-check.sh", filepath.Join(repo, "sub"), path, append(env, c.env...), "check-run", "CHECK_PKGS=./a")
+			if code != c.wantExit {
+				t.Fatalf("exit %d, want %d:\n%s", code, c.wantExit, out)
+			}
+			for _, w := range c.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("output lacks %q:\n%s", w, out)
+				}
+			}
+			for _, w := range c.notWant {
+				if strings.Contains(out, w) {
+					t.Errorf("output has %q:\n%s", w, out)
+				}
+			}
+			if c.fail == "" && len(c.env) == 0 {
+				if got := readFileAbs(t, filepath.Join(state, "stdin")); got != "a.go\nb.md\n" {
+					t.Errorf("--code did not get the changed paths of --changed on stdin: %q", got)
+				}
+			}
+		})
 	}
 }
