@@ -71,6 +71,17 @@ func TestFilmImportsStayInsideTheHashedInputs(t *testing.T) {
 	}
 }
 
+// filmNames reads film/films.txt as the scripts do, but a NUL byte anywhere in it is an error, as in render.sh, publish.sh,
+// record.mjs and vite.config.ts (strings.Fields would keep it inside a name, bash `read` would cut a line at it).
+func filmNames(t *testing.T, root string) []string {
+	t.Helper()
+	text := readFile(t, root, "film/films.txt")
+	if strings.ContainsRune(text, 0) {
+		t.Fatal("film/films.txt holds a NUL byte, which is not in a film name")
+	}
+	return strings.Fields(text)
+}
+
 // The films are the lines of film/films.txt, the one list render.sh, record.mjs and the Vite config read. A film's
 // page is film/<name>.html, except the launch film's, which is film/index.html (its URL is the server's root and
 // its file keeps the name the README embeds). A page nobody lists is never rendered; a listed film with no page fails
@@ -79,7 +90,7 @@ func TestFilmPagesAreTheFilmList(t *testing.T) {
 	root := repoRoot(t)
 	var films []string
 	seen := map[string]bool{}
-	for _, name := range strings.Fields(readFile(t, root, "film/films.txt")) {
+	for _, name := range filmNames(t, root) {
 		if !regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`).MatchString(name) {
 			t.Errorf("film/films.txt: %q is not a film name (lower-case words joined by -)", name)
 		}
@@ -129,6 +140,15 @@ func TestFilmPagesAreTheFilmList(t *testing.T) {
 			t.Errorf("%s does not read film/films.txt: a film added there would be skipped by it", f)
 		}
 	}
+	// Each reader of the list refuses a NUL byte in it (bash `read` cuts a line there, the others keep it): a script that
+	// drops the refusal reads another list than the rest.
+	for f, nul := range map[string]string{
+		"film/vite.config.ts": `\u0000`, "film/record.mjs": `\u0000`, "film/render.sh": `'\000'`, "film/publish.sh": `'\000'`,
+	} {
+		if !strings.Contains(readFile(t, root, f), nul) {
+			t.Errorf("%s does not refuse a NUL byte in film/films.txt, as the other readers of the list do", f)
+		}
+	}
 }
 
 // The grammar of film/max-bytes.txt, the same in record.mjs (the render job), publish.sh (the publish job) and here: a
@@ -141,8 +161,13 @@ var (
 	filmCapLine   = regexp.MustCompile(`^[ \t]*([^ \t]+)[ \t]+([1-9][0-9]{0,14})[ \t]*$`)
 )
 
-// parseFilmCaps returns the key of each cap line in order, and the first line that is not one.
+// parseFilmCaps returns the key of each cap line in order, and the first line that is not one. A NUL byte anywhere in the
+// text, a comment line included, refuses the whole text, as in record.mjs and publish.sh (bash `read` cuts a line at a NUL
+// byte, so only a whole-file rule keeps the three in step); bad is then "NUL".
 func parseFilmCaps(text string) (keys []string, bad string, ok bool) {
+	if strings.ContainsRune(text, 0) {
+		return nil, "NUL", false
+	}
 	for _, raw := range strings.Split(text, "\n") {
 		line := strings.TrimSuffix(raw, "\r")
 		if filmBlankLine.MatchString(line) {
@@ -181,6 +206,8 @@ func TestFilmCapGrammar(t *testing.T) {
 		{"sign", "default +5", false},
 		{"NUL after the bytes", "default 5\x00junk", false},
 		{"a line of NUL alone", "default 5\n\x00\n", false},
+		{"NUL in a comment line", "# a\x00b\ndefault 5", false},
+		{"NUL in a comment after the cap line", "default 5\n#\x00", false},
 	} {
 		if _, bad, ok := parseFilmCaps(c.text); ok != c.ok {
 			t.Errorf("%s: %q accepted=%v, want %v (first refused line %q)", c.name, c.text, ok, c.ok, bad)
@@ -194,7 +221,7 @@ func TestFilmCapGrammar(t *testing.T) {
 func TestFilmCapsAreOneFile(t *testing.T) {
 	root := repoRoot(t)
 	listed := map[string]bool{}
-	for _, name := range strings.Fields(readFile(t, root, "film/films.txt")) {
+	for _, name := range filmNames(t, root) {
 		listed[name] = true
 	}
 	keys, bad, ok := parseFilmCaps(readFile(t, root, "film/max-bytes.txt"))
@@ -214,7 +241,7 @@ func TestFilmCapsAreOneFile(t *testing.T) {
 	}
 	// Each script must read the file itself (a comment naming it is not a read), and parse it with the grammar above.
 	reads := map[string]*regexp.Regexp{
-		"film/record.mjs": regexp.MustCompile(`readFileSync\([^)]*"max-bytes\.txt"`),
+		"film/record.mjs": regexp.MustCompile(`readNoNul\("max-bytes\.txt"\)`),
 		"film/publish.sh": regexp.MustCompile(`(?m)^done < film/max-bytes\.txt$`),
 	}
 	for _, f := range []string{"film/record.mjs", "film/publish.sh"} {

@@ -23,7 +23,17 @@ const noMp4 = args.includes("--no-mp4");
 const framesOpt = Math.floor(Number(opt("frames", 0))) || 0;
 const fpsOpt = Number(opt("fps", 0)) || 0;
 const film = opt("film", "launch");
-const films = fs.readFileSync(path.join(here, "films.txt"), "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+// A NUL byte anywhere in films.txt or max-bytes.txt is refused, as film/render.sh and film/publish.sh refuse it (bash `read` would
+// cut a line at it, so only a whole-file rule keeps the readers in step).
+const readNoNul = (file) => {
+  const text = fs.readFileSync(path.join(here, file), "utf8");
+  if (text.includes("\u0000")) {
+    console.error(`record: film/${file} holds a NUL byte, which is not in ${file === "films.txt" ? "a film name" : '"<film> <positive number of bytes, at most 15 digits>"'}`);
+    process.exit(1);
+  }
+  return text;
+};
+const films = readNoNul("films.txt").split("\n").map((l) => l.trim()).filter(Boolean);
 if (!films.includes(film)) {
   console.error(`record: unknown film "${film}", film/films.txt lists: ${films.join(", ")}`);
   process.exit(1);
@@ -42,7 +52,7 @@ const BYTES = "[1-9][0-9]{0,14}";
 const blankLine = /^[ \t]*(#|$)/;
 const capLine = new RegExp(`^[ \\t]*([^ \\t]+)[ \\t]+(${BYTES})[ \\t]*$`);
 const caps = new Map();
-for (const raw of fs.readFileSync(path.join(here, "max-bytes.txt"), "utf8").split("\n")) {
+for (const raw of readNoNul("max-bytes.txt").split("\n")) {
   const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
   if (blankLine.test(line)) continue;
   const m = capLine.exec(line);

@@ -9,7 +9,10 @@ const root = path.resolve(here, "..");
 
 // The films are the lines of films.txt, the one list render.sh and record.mjs read too. A film's page is
 // <name>.html, except the launch film's, which is index.html (its URL is the server's root).
-const films = fs.readFileSync(path.join(here, "films.txt"), "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+// A NUL byte in the list is refused, as render.sh, publish.sh and record.mjs refuse it.
+const filmsText = fs.readFileSync(path.join(here, "films.txt"), "utf8");
+if (filmsText.includes("\u0000")) throw new Error("film/films.txt holds a NUL byte, which is not in a film name");
+const films = filmsText.split("\n").map((l) => l.trim()).filter(Boolean);
 const input = Object.fromEntries(films.map((name) => [name, path.join(here, name === "launch" ? "index.html" : `${name}.html`)]));
 
 export default {

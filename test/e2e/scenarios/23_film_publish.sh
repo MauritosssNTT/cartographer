@@ -22,7 +22,9 @@
 #   8. Only the names film/films.txt allows are published (the render job's file
 #      names are data it chose, D1068): a file not in the list, a name holding a
 #      newline that would add a tree entry, a symlink, are exit 1 and push
-#      nothing; films.txt without a final newline or with CRLF still reads.
+#      nothing; films.txt without a final newline or with CRLF still reads; a
+#      NUL byte in films.txt is refused by publish.sh and by render.sh, which
+#      stops before it starts vite.
 #   9. A file over its film's cap (film/max-bytes.txt, the file record.mjs reads
 #      too; FILM_MAX_BYTES overrides it) is exit 1 naming the file, its size and
 #      the cap, before any file is hashed and with nothing pushed; a file exactly
@@ -77,7 +79,7 @@ git config user.email e2e@example.com
 
 # The scripts under test, and the paths film/inputs.sh lists.
 mkdir -p film/src web/src/lib/graph3d docs/brand web/src/styles
-cp "${REPO_ROOT}/film/publish.sh" "${REPO_ROOT}/film/film-needed.sh" "${REPO_ROOT}/film/inputs.sh" "${REPO_ROOT}/film/max-bytes.txt" film/
+cp "${REPO_ROOT}/film/publish.sh" "${REPO_ROOT}/film/render.sh" "${REPO_ROOT}/film/film-needed.sh" "${REPO_ROOT}/film/inputs.sh" "${REPO_ROOT}/film/max-bytes.txt" film/
 printf 'launch\nplugins\ndeployment\n' > film/films.txt
 echo main > film/src/main.ts
 echo scene > web/src/lib/graph3d/scene.ts
@@ -226,6 +228,20 @@ assert_file_contains "${DIR}/out.txt" "NUL byte"
 printf 'launch\nplugins\n\000\n' > film/films.txt
 check "films.txt with a line of NUL alone is refused" 1 "${PUBLISH[@]}"
 unchanged "a films.txt with a NUL byte"
+# render.sh reads the same list and refuses the NUL byte before it starts vite: the scratch repo has no web/node_modules, so a
+# render that got past the check would fail with another message, and film/out (made just before vite starts) must not exist.
+for nul in 'launch\000junk\nplugins\n' 'launch\nplugins\n\000\n'; do
+    printf "$nul" > film/films.txt
+    check "render.sh refuses a films.txt with a NUL byte" 1 film/render.sh
+    assert_file_contains "${DIR}/out.txt" "render: film/films.txt holds a NUL byte"
+    if grep -q "vite" "${DIR}/out.txt"; then
+        _assert_fail "render.sh went on to start vite: $(cat "${DIR}/out.txt")"
+    elif [[ -e film/out ]]; then
+        _assert_fail "render.sh made film/out, which it does only just before it starts vite"
+    else
+        _assert_pass "render.sh stopped before it started vite"
+    fi
+done
 git checkout -q film/films.txt
 
 echo ""
