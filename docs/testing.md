@@ -852,9 +852,12 @@ starts three servers on ephemeral loopback ports and runs the suite: `local`
 with auth off, `auth` with an admin token and one narrowed by a role to
 `Entity` concepts under `infra/` in one KB, and `ext` with auth on and a
 pinned plugin (vendored by `plugin vendor` from a tree the script writes)
-whose atlas side declares a view and an app; the app lives on a fourth
+whose atlas side declares a view and an app (its binary is a `dev` build, which
+meets any plugin floor and asks GitHub for nothing); the app lives on a fourth
 loopback port, served by `web/e2e/app-origin.mjs`, which records the headers
-it receives. Node runs the test driver only.
+it receives. Only `extension.spec.ts` reads those two URLs (`E2E_EXT_URL`,
+`E2E_APP_URL`), when a test asks for them, so `make hero` needs only the
+first two. Node runs the test driver only.
 
 The fixture is `web/e2e/fixture.mjs`, a pure function of itself: three KBs —
 `atlas` (two Maps and a Journal, `type` and `status` on every concept, a

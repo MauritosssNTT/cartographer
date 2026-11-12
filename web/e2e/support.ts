@@ -2,21 +2,30 @@ import { test as base, expect, type Page } from "@playwright/test";
 
 const LOCAL = process.env.E2E_LOCAL_URL;
 const AUTH = process.env.E2E_AUTH_URL;
-const EXT = process.env.E2E_EXT_URL;
-const APP = process.env.E2E_APP_URL;
-if (!LOCAL || !AUTH || !EXT || !APP) {
-  throw new Error("E2E_LOCAL_URL / E2E_AUTH_URL / E2E_EXT_URL / E2E_APP_URL are unset: run the suite through `make e2e-web`.");
+if (!LOCAL || !AUTH) {
+  throw new Error("E2E_LOCAL_URL / E2E_AUTH_URL are unset: run the suite through `make e2e-web`.");
 }
 
 /** The auth-off server and the auth-on one (see e2e/run.sh). */
 export const LOCAL_URL: string = LOCAL;
 export const AUTH_URL: string = AUTH;
-/** The auth-on server with a pinned plugin (a view and an app), and the other origin that app lives on. */
-export const EXT_URL: string = EXT;
-export const APP_URL: string = APP;
 export const ADMIN_TOKEN = "e2e-admin-token";
 export const NARROW_TOKEN = "e2e-narrow-token";
 export const EXT_TOKEN = "e2e-ext-token";
+
+/**
+ * The auth-on server with a pinned plugin (a view and an app), and the other
+ * origin that app lives on. Read when asked, not at import: only
+ * extension.spec.ts needs them, and `make hero` (web/scripts/record-hero.sh)
+ * imports this file with just the two URLs above.
+ */
+function required(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} is unset: run the suite through \`make e2e-web\`.`);
+  return value;
+}
+export const extUrl = (): string => required("E2E_EXT_URL");
+export const appUrl = (): string => required("E2E_APP_URL");
 
 /**
  * Every test gets a page whose traffic is watched: any request to an origin
@@ -31,7 +40,9 @@ export const test = base.extend<{ foreign: string[]; consoleLines: string[] }>({
       const foreign: string[] = [];
       // The app's origin is deliberately absent: the Atlas page must never
       // contact it (the link opens it in a page of its own, which is not watched).
-      const allowed = new Set([LOCAL_URL, AUTH_URL, EXT_URL].map((u) => new URL(u).origin));
+      // The ext server is allowed where the run has one (it does not under `make hero`).
+      const servers = [LOCAL_URL, AUTH_URL, process.env.E2E_EXT_URL].filter((u): u is string => !!u);
+      const allowed = new Set(servers.map((u) => new URL(u).origin));
       page.on("request", (request) => {
         const url = request.url();
         if (url.startsWith("data:") || url.startsWith("blob:")) return;

@@ -98,12 +98,15 @@ env -u CARTOGRAPHER_TOKENS -u CARTOGRAPHER_AUTH \
     >"${TMP}/auth.log" 2>&1 &
 PIDS+=("$!")
 
-# ext: the same binary, built to report a version that meets the floor a schema 2
-# plugin must declare (>=0.29.0). `git describe` of a checkout whose last tag is
-# older, or a shallow one, would make the pin refuse the plugin and the start
-# fail; the bundle it serves is the same one.
+# ext: the same code, built as a dev build. A schema 2 plugin declares a floor
+# (>=0.29.0) that `git describe` of a checkout whose last tag is older, or a
+# shallow one, would make the pin refuse. A "dev" version satisfies every range
+# (core.RangeMet), so the floor never depends on the checkout, and it is on no
+# release line: the server asks GitHub for neither an update nor the release
+# history (serverUpdateEnabled), which a suite that runs offline must not do.
+# The bundle it serves is the same one.
 EXT_BIN="${TMP}/cartographer-ext"
-(cd "$REPO_ROOT" && go build -ldflags "-X main.version=0.29.0" -o "$EXT_BIN" ./cmd/cartographer)
+(cd "$REPO_ROOT" && go build -ldflags "-X main.version=dev" -o "$EXT_BIN" ./cmd/cartographer)
 
 node "${WEB_DIR}/e2e/fixture.mjs" "${TMP}/ext"
 "${REPO_ROOT}/test/lib/kb-bootstrap.sh" "${TMP}"/ext/{atlas,annex,void}
