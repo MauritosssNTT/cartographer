@@ -577,6 +577,10 @@ func runServe(cfg *config.Config, reload *authReload) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	stopSinks, err := startAuditSinks(serverHooks, auditLog, cfg.AuditLogPath())
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	if err := setupGitSSH(cfg.CredentialsPath()); err != nil {
 		log.Fatalf("git SSH setup: %v", err)
@@ -588,7 +592,9 @@ func runServe(cfg *config.Config, reload *authReload) {
 	if cfg.HTTP != "" {
 		// serveHTTP installs its own signal handler; the context only stops a
 		// bootstrap clone when the server is asked to end.
-		if err := serveHTTP(cfg.HTTP, func(phase func(string)) kbBootstrap { return bootstrapKBs(cfg, phase) }, cfg.Auth, reload, cfg.Web.Enabled, auditLog, latestVersion, cfg); err != nil {
+		err := serveHTTP(cfg.HTTP, func(phase func(string)) kbBootstrap { return bootstrapKBs(cfg, phase) }, cfg.Auth, reload, cfg.Web.Enabled, auditLog, latestVersion, cfg)
+		stopSinks()
+		if err != nil {
 			if errors.Is(err, errRestartToMount) {
 				// Non-zero: launchd/systemd restart a failed process, and the
 				// restart mounts the KB that was cloned.
@@ -600,11 +606,11 @@ func runServe(cfg *config.Config, reload *authReload) {
 		bs := bootstrapKBs(cfg, func(string) {})
 		// Bootstrap is over: give Ctrl-C back its default effect.
 		stopBoot()
-		serveStdio(bs.kbs[0], bs.artifactSigners[0], bs.sqlIdxs, auditLog, latestVersion, cfg.FeedbackDestination())
+		serveStdio(bs.kbs[0], bs.artifactSigners[0], bs.sqlIdxs, auditLog, latestVersion, cfg.FeedbackDestination(), stopSinks)
 	}
 }
 
-func serveStdio(k *kb.KB, artifactSigner ed25519.PrivateKey, sqlIdxs map[string]*sqlindex.Index, auditLog *audit.Log, latestVersion func() string, fb feedback.Destination) {
+func serveStdio(k *kb.KB, artifactSigner ed25519.PrivateKey, sqlIdxs map[string]*sqlindex.Index, auditLog *audit.Log, latestVersion func() string, fb feedback.Destination, stopSinks func()) {
 	if auditLog != nil {
 		log.Printf("audit log active")
 	}
@@ -614,6 +620,7 @@ func serveStdio(k *kb.KB, artifactSigner ed25519.PrivateKey, sqlIdxs map[string]
 	s.SetToolsProfile(toolsProfile)
 	s.SetAuditLog(auditLog)
 	s.SetHooks(serverHooks)
+	s.SetBlockingAuditSinks(serverBlockingSinks)
 	s.SetKBName(k.AuthName)
 	s.SetTransport("stdio")
 	s.SetLatestVersionSource(latestVersion)
@@ -628,6 +635,7 @@ func serveStdio(k *kb.KB, artifactSigner ed25519.PrivateKey, sqlIdxs map[string]
 	if fErr := k.FlushPush(shutdownPushFlushTimeout); fErr != nil {
 		log.Printf("flush pending push at shutdown: %v", fErr)
 	}
+	stopSinks()
 	if runErr != nil {
 		log.Fatalf("server error: %v", runErr)
 	}
@@ -795,6 +803,7 @@ func serveHTTP(addr string, boot func(phase func(string)) kbBootstrap, authCfg c
 				s.SetToolsProfile(toolsProfile)
 				s.SetAuditLog(auditLog)
 				s.SetHooks(serverHooks)
+				s.SetBlockingAuditSinks(serverBlockingSinks)
 				s.SetKBName(name)
 				s.SetTransport("http")
 				s.SetLatestVersionSource(latestVersion)
