@@ -70,7 +70,7 @@ func TestScrubSourcesDropsMalformedElements(t *testing.T) {
 		"a failed check, no code":    with(func(s *Source) { s.Check = SourceCheck{Outcome: CheckFailed} }),
 		"a code that is a sentence":  with(func(s *Source) { s.Check = SourceCheck{Outcome: CheckFailed, Code: "token sk-live-1234 refused"} }),
 		"a negative age":             with(func(s *Source) { s.Check = SourceCheck{Outcome: CheckOK, AgeSeconds: -1} }),
-		"an absurd age":              with(func(s *Source) { s.Check = SourceCheck{Outcome: CheckOK, AgeSeconds: 1 << 40} }),
+		"an absurd age":              with(func(s *Source) { s.Check = SourceCheck{Outcome: CheckOK, AgeSeconds: maxCheckAge + 1} }),
 	}
 	for name, s := range bad {
 		if got := ScrubSources([]Source{s}, time.Now()); len(got) != 0 {
