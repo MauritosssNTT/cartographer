@@ -32,3 +32,42 @@ func TestReadFileHoldsTheScenarioToItsShape(t *testing.T) {
 		}
 	}
 }
+
+func TestReadFileRefusesSymlinksAndBoundsTheTotal(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.json")
+	if err := os.WriteFile(outside, []byte(`"x"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "link.json")); err != nil {
+		t.Skip("no symlinks here")
+	}
+	doc := func(files ...string) string {
+		s := "http:\n"
+		for _, f := range files {
+			s += "  - method: GET\n    url: https://wiki.example.com/\n    response:\n      body_file: " + f + "\n"
+		}
+		return s + "steps:\n  - verb: list\n"
+	}
+	if err := os.WriteFile(filepath.Join(dir, "link.yaml"), []byte(doc("link.json")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFile(dir, "link"); err == nil {
+		t.Error("a symlinked body_file was read")
+	}
+	big := make([]byte, maxFile-10)
+	var names []string
+	for i := range 5 {
+		n := "big" + string(rune('a'+i)) + ".json"
+		if err := os.WriteFile(filepath.Join(dir, n), big, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, n)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "many.yaml"), []byte(doc(names...)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadFile(dir, "many"); err == nil {
+		t.Error("five near-cap body_files were read: the total is not bounded")
+	}
+}

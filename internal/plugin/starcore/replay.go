@@ -24,12 +24,18 @@ type Exchange struct {
 
 // Replay makes http.request answer from recordings, for `plugin test`.
 //
-// It is not a seam: the host still runs every check http.request runs for a live
-// call (method, scheme, credentials in the url, the permissions.net allow-list,
-// the header rules, the caps and, for a recorded 3xx, the redirect rules), then
-// answers from the recording instead of resolving or dialing. It can only
+// It is not a seam: the host still runs the checks http.request makes before it
+// goes to the network (method, scheme, credentials in the url, the
+// permissions.net allow-list, the header rules, the caps and, for a recorded
+// 3xx, the redirect rules), then answers from the recording. It can only
 // ever hand back canned data and cannot reach a network, so a script cannot use
 // it to learn anything; a request with no recording fails naming method and url.
+//
+// GAP: nothing is resolved or dialed, so the checks that judge the address a
+// name resolves to do not run: the refusal of a private, loopback or link-local
+// address and the two-key net_private grant (the manifest's permission and the
+// operator's host list) are not exercised. A recipe that reaches a private host
+// passes a replay and still needs the grant in a real Surveyor.
 // TRAP: nothing the Surveyor runs may set CallSpec.Replay (internal/boundaries
 // pins it): a Surveyor that replayed would poll recorded data as if it were live.
 type Replay struct{ Exchanges []Exchange }
