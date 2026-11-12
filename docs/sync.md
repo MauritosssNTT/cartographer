@@ -687,6 +687,17 @@ at all would be refused by `workspace bind` rather than degraded to the global c
 projects every kind into its workspace `.agents/` layer and `AGENTS.md` (probed on CLI 1.3.2); a
 rule file is not used for instructions because it is read only with `trigger: always_on`.
 
+**Linked git worktrees.** A workspace projection is written into the bound folder only (for Kiro,
+agents go to `<repo>/.kiro/agents/<name>.json`), and the files are untracked and excluded from git
+(§Repository hygiene), so a linked worktree of the repository (`git worktree add`, for example
+`<repo>/.worktrees/<slug>`) is a different folder that does not contain them: Cartographer writes
+nothing there. To project into it, bind the worktree too, as any other folder:
+`cartographer workspace bind <provider> <repo>/.worktrees/<slug> --kb <name>…` (the path only has to be
+an existing directory). The binding is per path, so it is also removed per path: a bound worktree
+that `git worktree remove` deleted is an error for that provider's `sync` until
+`cartographer workspace unbind <provider> <path>`. Projecting into a repository's linked worktrees
+without binding each one is proposed in [#1982](https://github.com/BeppeTemp/cartographer/issues/1982).
+
 **Shared paths.** `.agents/skills/` is Codex's project skill directory too, and `AGENTS.md` is shared
 by Codex, OpenCode, Antigravity, Copilot and Pi. Two providers bound to one workspace write such a path
 identically, so a prune never deletes a path that another provider's projection of the same
