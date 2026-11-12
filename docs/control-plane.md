@@ -628,7 +628,7 @@ URL, variable name, header or detail ever leaves the Surveyor. The array is opti
 the row says `[]`), an additive field of protocol 1. `surveyorconfig.ScrubSources` runs on receipt: an element with an
 unknown origin, kind, shape or outcome, a name that is not an operator-local or a `<plugin>/<name>` name, a plugin that is not
 its name's, a digest that is not 64 hex digits, a `code` that is not an identifier, or a name repeated among the recipes or among the connectors (a recipe and a connector
-may share one: both are kept, the recipe first) is dropped alone (the
+may share one: both are kept, in the order received) is dropped alone (the
 report is not refused), the elements past 200 are cut, and each report replaces the array whole. The server dates a check
 itself: the Surveyor sends `age_seconds` and the row shows `check.at`, the receipt time minus that age (a time the sender wrote
 is not read). The settings read route returns the array in each `surveyors` row, under the same visibility as the row.

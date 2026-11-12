@@ -143,7 +143,7 @@ func (c *Config) Sources(now time.Time) []surveyorconfig.Source {
 	return out
 }
 
-// recordSystem keeps the check outcome of a system poll or dry run, from what
+// recordSystem keeps the check outcome of a system poll, from what
 // observeSystem returned: refused says the failure came from the check itself, so
 // a listing or state failure after a clean check still records ok; an error is
 // the context ending, which says nothing about the recipe.
