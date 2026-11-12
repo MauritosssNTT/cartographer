@@ -17,6 +17,10 @@ import (
 // it fail.
 var trackedPathsFn = gitx.TrackedPathsFold
 
+// checkRepoFn tells a workspace in no repository from a git that refused to
+// answer; indirected for tests.
+var checkRepoFn = gitx.CheckRepo
+
 // InstructionsDestTracked reports whether the project-scope instructions block
 // of opts is written into a file git tracks (#1897), or into a place the client
 // cannot show is not shared: the destination itself (honouring
@@ -30,9 +34,11 @@ var trackedPathsFn = gitx.TrackedPathsFold
 // It is decided once per projection, by the caller, and handed to Apply and to
 // the status diff alike, so the recorded PathsSectionHash agrees with the one
 // status recomputes. It asks git about the one or two paths concerned, never
-// for the whole index. Any other scope, an empty destination, a workspace that
-// is in no repository, and a repository git cannot read all answer false: the
-// block keeps its paths, as before. A destination that resolves outside the
+// for the whole index. Any other scope, an empty destination and a workspace
+// that is in no repository answer false: the block keeps its paths, as before.
+// A repository git cannot read (dubious ownership, a corrupt index, git
+// missing, a lock) answers true: git was asked and did not say, and the
+// unsafe side is writing this machine's paths into a file that may be shared. A destination that resolves outside the
 // workspace answers true without running git: the workspace's tracked set says
 // nothing about the file it lands in (a subdirectory's `CLAUDE.md ->
 // ../AGENTS.md`), so the paths are withheld. So is one that cannot be
@@ -63,7 +69,10 @@ func InstructionsDestTracked(opts ApplyOptions) bool {
 	}
 	tracked, err := trackedPathsFn(opts.BaseDir, paths...)
 	if err != nil {
-		return false
+		// Only a workspace in no repository keeps the table; any other
+		// failure of git withholds it.
+		inRepo, cerr := checkRepoFn(opts.BaseDir)
+		return cerr != nil || inRepo
 	}
 	for _, p := range paths {
 		if tracked[p] {

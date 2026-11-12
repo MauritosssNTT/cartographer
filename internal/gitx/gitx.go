@@ -1655,6 +1655,29 @@ func TrackedPaths(dir string, paths ...string) (map[string]bool, error) {
 	return out, nil
 }
 
+// pathspecVars are the environment variables that change how git reads a
+// pathspec. An inherited GIT_LITERAL_PATHSPECS=1 (an editor's `git
+// --literal-pathspecs commit` exports it to its hooks) makes git read the magic
+// of `:(literal,icase)X` as part of a file name.
+var pathspecVars = []string{
+	"GIT_LITERAL_PATHSPECS", "GIT_GLOB_PATHSPECS", "GIT_NOGLOB_PATHSPECS", "GIT_ICASE_PATHSPECS",
+}
+
+// withoutPathspecVars returns a copy of env without the pathspecVars.
+func withoutPathspecVars(env []string) []string {
+	out := make([]string, 0, len(env))
+next:
+	for _, kv := range env {
+		for _, v := range pathspecVars {
+			if strings.HasPrefix(kv, v+"=") {
+				continue next
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
 // TrackedPathsFold is TrackedPaths for a caller that must not be fooled by
 // spelling: it returns which of paths (slash-separated, relative to dir, taken
 // literally) git tracks in the index under any capitalisation, keyed by the
@@ -1664,28 +1687,26 @@ func TrackedPaths(dir string, paths ...string) (map[string]bool, error) {
 // (`:(literal,icase)`, which the global --literal-pathspecs would turn off) folds
 // the whole path, directories included, on every filesystem: on a case-sensitive
 // one the answer errs toward "tracked", the safe side for a caller that withholds
-// something from a shared file.
+// something from a shared file. git folds ASCII letters only: a non-ASCII
+// directory that differs from the tracked one only by case is not matched.
+//
+// Each path is asked on its own, with the GIT_*_PATHSPECS variables dropped, and
+// a name git lists counts when it has as many components as the path asked: it
+// is the file itself, not a file below a directory that folds to it. The names
+// are not compared as strings, since git may spell them differently from the
+// request (core.precomposeunicode returns a decomposed name composed).
 func TrackedPathsFold(dir string, paths ...string) (map[string]bool, error) {
 	out := map[string]bool{}
-	if len(paths) == 0 {
-		return out, nil
-	}
-	args := []string{"-C", dir, "ls-files", "-z", "--"}
 	for _, p := range paths {
-		args = append(args, ":(literal,icase)"+p)
-	}
-	cmd := procattr.Hide(exec.Command("git", args...))
-	cmd.Env = gitEnv(nil)
-	b, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("git ls-files: %w", err)
-	}
-	for _, f := range strings.Split(string(b), "\x00") {
-		if f == "" {
-			continue
+		cmd := procattr.Hide(exec.Command("git", "-C", dir, "ls-files", "-z", "--", ":(literal,icase)"+p))
+		cmd.Env = withoutPathspecVars(gitEnv(nil))
+		b, err := cmd.Output()
+		if err != nil {
+			return nil, fmt.Errorf("git ls-files: %w", err)
 		}
-		for _, p := range paths {
-			if strings.EqualFold(f, p) { // not a file below a directory that folds to p
+		depth := strings.Count(p, "/")
+		for _, f := range strings.Split(string(b), "\x00") {
+			if f != "" && strings.Count(f, "/") == depth { // not a file below a directory
 				out[p] = true
 			}
 		}

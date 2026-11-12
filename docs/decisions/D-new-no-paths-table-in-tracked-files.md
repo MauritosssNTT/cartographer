@@ -15,14 +15,17 @@ which the paragraph names. A destination that resolves outside the workspace (a 
 `CLAUDE.md -> ../AGENTS.md`) or cannot be resolved (a dangling or looping link) counts as tracked
 without running git, and so does one that lands inside a nested repository or a submodule (a `.git`
 between the workspace and the file): the workspace's tracked set says nothing about the file it lands in.
-The file is asked about whatever its capitalisation (`:(literal,icase)` per pathspec, directories
+The file is asked about whatever its ASCII capitalisation (`:(literal,icase)` per pathspec, directories
 included): a case-insensitive filesystem writes `CLAUDE.md` into the `claude.md` a repository tracks,
-and on a case-sensitive one the answer errs toward withholding. The
+and on a case-sensitive one the answer errs toward withholding. git folds ASCII letters only, so a
+non-ASCII directory that differs from the tracked one only by case is a stated limit. The
 client decides it once per projection (`provisioning.InstructionsDestTracked`, handed to `Apply`
 and to the status diff as `ApplyOptions.WithholdLocalPaths`), so the paths-section hash that sync
 records is the one status recomputes. An untracked or client-owned destination (`CLAUDE.local.md`,
-a kiro steering file, an untracked `AGENTS.md`) and the global scope keep their paths; where git
-cannot say (no repository, git missing, an unreadable index) they stay too, as before. Skills,
+a kiro steering file, an untracked `AGENTS.md`) and the global scope keep their paths; a workspace
+in no repository keeps them too, as before. Where git is asked and fails (dubious ownership, git missing,
+an unreadable index) they are withheld: the file may be shared, and writing a machine's paths into a
+shared file is the unsafe side. Skills,
 agents and the other kinds are written to their own files and are expanded as usual.
 
 **Why.** The paths are absolute paths of one machine, usually containing the OS user name
@@ -49,7 +52,7 @@ rewritten once, without the paths.
   one side knew reported drift forever (the `TestShared_Convergence` failure mode).
 - *List the whole index to answer one question.* The client asks git about the one or two paths
   concerned (`gitx.TrackedPathsFold`, literal case-folded pathspecs), with the variables that pin a repository
-  (`GIT_DIR`, `GIT_INDEX_FILE`, …) dropped, since a sync run from a git hook inherits them and would
+  (`GIT_DIR`, `GIT_INDEX_FILE`, …) and those that change how a pathspec is read (`GIT_LITERAL_PATHSPECS`, …) dropped, since a sync run from a git hook inherits them and would
   answer for the repository running the hook; the other client git reads that name a workspace
   with `-C` (the owned-file listing that feeds sync, the bind guard's `origin`) run the same way.
 - *Ask git about the name on disk.* A file tracked but absent from the disk, or a directory that

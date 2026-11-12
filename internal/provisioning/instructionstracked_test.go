@@ -235,12 +235,24 @@ func TestInstructionsDestTracked_Answers(t *testing.T) {
 	if InstructionsDestTracked(owned) {
 		t.Error("an untracked InstructionsRel is not tracked, whatever the matrix names")
 	}
-	// A repository git cannot read keeps today's behaviour: the table stays.
+	// A repository git cannot read withholds: git was asked and did not say.
 	prev := trackedPathsFn
 	trackedPathsFn = func(string, ...string) (map[string]bool, error) { return nil, errors.New("dubious ownership") }
 	t.Cleanup(func() { trackedPathsFn = prev })
+	if !InstructionsDestTracked(opts) {
+		t.Errorf("a git error inside a repository must withhold the paths (%s)", dir)
+	}
+	// So does a git that cannot even say whether there is a repository.
+	prevCheck := checkRepoFn
+	checkRepoFn = func(string) (bool, error) { return false, errors.New("git missing") }
+	t.Cleanup(func() { checkRepoFn = prevCheck })
+	if !InstructionsDestTracked(opts) {
+		t.Error("a git that cannot say whether this is a repository must withhold the paths")
+	}
+	// Only a workspace in no repository keeps the table, whatever ls-files said.
+	checkRepoFn = func(string) (bool, error) { return false, nil }
 	if InstructionsDestTracked(opts) {
-		t.Errorf("a TrackedPaths error must not omit the table (%s)", dir)
+		t.Error("a workspace in no repository keeps the table")
 	}
 }
 

@@ -87,8 +87,8 @@ func (p syncProjection) Label() string {
 // KB's own placeholders left unexpanded — because the file it goes into is
 // tracked by git (#1897): sync (materializeForProviders) and status
 // (workspaceProviderDiff) both ask it, so the paths-section hash they judge
-// agrees. Only a workspace projection can answer yes; where git cannot say, the
-// paths stay.
+// agrees. Only a workspace projection can answer yes; a workspace in no
+// repository keeps the paths, and a git that fails withholds them.
 func withholdLocalPaths(p syncProjection) bool {
 	if p.Scope != contract.ScopeProject || p.Workspace == "" {
 		return false

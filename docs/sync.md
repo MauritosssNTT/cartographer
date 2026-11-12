@@ -737,8 +737,9 @@ A projection writes into a directory the user version-controls, so two rules hol
   a directory above it (listed in `allow_symlinks`), to a tracked file in the workspace, e.g.
   `CLAUDE.md -> AGENTS.md`, and when it resolves outside the workspace or into a nested
   repository or submodule, whose files the workspace's git does not list. The file is looked up
-  whatever its capitalisation: on a case-insensitive filesystem the `CLAUDE.md` the client writes is
-  the `claude.md` the repository tracks
+  whatever its ASCII capitalisation: on a case-insensitive filesystem the `CLAUDE.md` the client writes is
+  the `claude.md` the repository tracks (git folds ASCII letters only: a non-ASCII directory that differs
+  from the tracked one only by case is not matched)
   ([D-new-no-paths-table-in-tracked-files](decisions/D-new-no-paths-table-in-tracked-files.md)).
   The block is one per workspace and lists the paths of **every** provider bound to it, including
   one a `sync --client` run does not touch; unbinding a provider rewrites it with the others'
@@ -950,10 +951,12 @@ passing `cfg.SearchRoots`/`cfg.Paths`.
   the KB's own instruction text are left as written (an escaped `{{\repo:…}}` still loses its
   backslash), and the paragraph stays and points to `cartographer resolve`.
   `ApplyOptions.WithholdLocalPaths` is set by `sync` and `status` from the same answer — a
-  `git ls-files` for the one or two paths concerned, case-folded, run without the `GIT_DIR`-style
-  variables a git hook leaves in the environment (as is the client's other git read that names a
-  workspace: the owned-file listing and the bind guard's `origin`) — so the hash they judge agrees; where git cannot say, the paths
-  stay. A file that becomes tracked after a sync is rewritten once without them. Skills and the other
+  `git ls-files` for the one or two paths concerned, ASCII case-folded, run without the `GIT_DIR`-style
+  variables a git hook leaves in the environment, nor the `GIT_*_PATHSPECS` ones that change how a
+  pathspec is read (as is the client's other git read that names a
+  workspace: the owned-file listing and the bind guard's `origin`) — so the hash they judge agrees. A
+  workspace in no repository keeps the paths; when git is asked and fails (dubious ownership, a
+  corrupt index, git missing) they are withheld, since the file may be shared. A file that becomes tracked after a sync is rewritten once without them. Skills and the other
   kinds are written to their own files and are expanded as usual.
 - **Repo ambiguity**: a short name matching several distinct remotes is an explicit error (it asks
   for the full form `host/owner/name`); multiple clones of the same remote resolve to the first match in

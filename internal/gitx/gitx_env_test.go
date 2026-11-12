@@ -2,6 +2,7 @@ package gitx
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -114,5 +115,61 @@ func TestTrackedPathsFold(t *testing.T) {
 	}
 	if none, err := TrackedPathsFold(dir); err != nil || len(none) != 0 {
 		t.Errorf("no paths = %v, %v", none, err)
+	}
+}
+
+// An inherited GIT_LITERAL_PATHSPECS=1 (and its siblings) must not turn
+// `:(literal,icase)X` into a file name: the answer would be "untracked".
+func TestTrackedPathsFold_IgnoresPathspecEnvironment(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not in PATH")
+	}
+	dir := t.TempDir()
+	mustGit(t, dir, "init", "-q")
+	if err := os.WriteFile(filepath.Join(dir, "agents.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(t, dir, "add", "agents.md")
+	t.Setenv("GIT_LITERAL_PATHSPECS", "1")
+	t.Setenv("GIT_GLOB_PATHSPECS", "1")
+	t.Setenv("GIT_NOGLOB_PATHSPECS", "1")
+	t.Setenv("GIT_ICASE_PATHSPECS", "0")
+	got, err := TrackedPathsFold(dir, "AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got["AGENTS.md"] {
+		t.Errorf("with GIT_*_PATHSPECS inherited, a tracked file reads as untracked: %v", got)
+	}
+}
+
+// git may list a name composed (core.precomposeunicode) that was asked
+// decomposed: the file is still the file asked about.
+func TestTrackedPathsFold_UnicodeNormalisation(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not in PATH")
+	}
+	dir := t.TempDir()
+	mustGit(t, dir, "init", "-q")
+	nfc := "d\u00e9j\u00e0/\u00e9.md"
+	nfd := "de\u0301ja\u0300/e\u0301.md"
+	if err := os.MkdirAll(filepath.Join(dir, filepath.Dir(nfc)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, nfc), []byte("x"), 0o644); err != nil {
+		t.Skipf("write: %v", err)
+	}
+	mustGit(t, dir, "add", "-f", "--", nfc)
+	probe := exec.Command("git", "-C", dir, "ls-files", "--", nfd)
+	probe.Env = gitEnv(nil)
+	if b, err := probe.Output(); err != nil || len(b) == 0 {
+		t.Skip("this filesystem/git does not precompose Unicode names")
+	}
+	got, err := TrackedPathsFold(dir, nfd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[nfd] {
+		t.Errorf("a decomposed request for a tracked file reads as untracked: %v", got)
 	}
 }
