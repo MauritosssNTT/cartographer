@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // exeFile creates a cartographer executable in a fresh directory and returns
@@ -29,9 +31,17 @@ func pathStubs(t *testing.T, onPath []string, versions map[string]string, servic
 	t.Helper()
 	oPath, oVer, oSvc := pathBinariesFn, binaryVersionFn, serviceBinaryFn
 	t.Cleanup(func() { pathBinariesFn, binaryVersionFn, serviceBinaryFn = oPath, oVer, oSvc })
-	var asked []string
+	var (
+		mu    sync.Mutex // the copies are probed in parallel
+		asked []string
+	)
 	pathBinariesFn = func() []string { return onPath }
-	binaryVersionFn = func(p string) string { asked = append(asked, p); return versions[p] }
+	binaryVersionFn = func(p string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		asked = append(asked, p)
+		return versions[p]
+	}
 	serviceBinaryFn = func() string { return service }
 	return &asked
 }
@@ -160,5 +170,60 @@ func TestRunDoctor_ReportsASecondBinaryOnPath(t *testing.T) {
 	}
 	if code := doctorExitCode(report); code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+// The timeout bounds the probe even when the copy leaves a grandchild holding
+// its stdout: without WaitDelay, Output() waited for that pipe, not for the
+// deadline (12 s were seen). Several hung copies are probed at once, so the
+// report waits for one bound, not for their sum.
+func TestBinaryVersion_BoundedByAGrandchildHoldingStdout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell script: a background child that keeps stdout open")
+	}
+	oT, oW := binaryVersionTimeout, binaryVersionWaitDelay
+	t.Cleanup(func() { binaryVersionTimeout, binaryVersionWaitDelay = oT, oW })
+	binaryVersionTimeout, binaryVersionWaitDelay = 200*time.Millisecond, 200*time.Millisecond
+
+	// The shim hangs, and its background child keeps the pipe open well past the bound.
+	hung := "#!/bin/sh\nsleep 5 &\nsleep 5\n"
+	copies := []string{exeFile(t, hung), exeFile(t, hung), exeFile(t, hung)}
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	got := make([]string, len(copies))
+	for i, p := range copies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got[i] = binaryVersion(p)
+		}()
+	}
+	wg.Wait()
+	if elapsed, limit := time.Since(start), binaryVersionTimeout+binaryVersionWaitDelay+2*time.Second; elapsed > limit {
+		t.Errorf("binaryVersion of hung copies took %v, want under %v", elapsed, limit)
+	}
+	for i, v := range got {
+		if v != "" {
+			t.Errorf("copy %d reported %q, want empty (version unknown)", i, v)
+		}
+	}
+}
+
+// checkPathBinaries probes the copies together: with every probe taking half a
+// second, three copies are done in about that time, not in three times it.
+func TestCheckPathBinaries_ProbesInParallel(t *testing.T) {
+	a, b, c := exeFile(t, "a"), exeFile(t, "b"), exeFile(t, "c")
+	pathStubs(t, []string{a, b, c}, map[string]string{a: "1", b: "2", c: "3"}, "")
+	slow := binaryVersionFn
+	binaryVersionFn = func(p string) string { time.Sleep(500 * time.Millisecond); return slow(p) }
+
+	start := time.Now()
+	got := checkPathBinaries()
+	if elapsed := time.Since(start); elapsed > 1200*time.Millisecond {
+		t.Errorf("three 500 ms probes took %v, want them in parallel", elapsed)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].Message, a+" (1,") || !strings.Contains(got[0].Message, c+" (3)") {
+		t.Errorf("findings = %+v, want each copy with its own version", got)
 	}
 }

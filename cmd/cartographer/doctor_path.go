@@ -7,8 +7,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/BeppeTemp/cartographer/internal/procattr"
 	"github.com/BeppeTemp/cartographer/internal/service"
 )
 
@@ -32,8 +34,14 @@ var (
 )
 
 // binaryVersionTimeout bounds the run of another binary, which doctor does not
-// control: a hung copy must not hang the report.
-const binaryVersionTimeout = 3 * time.Second
+// control: a hung copy must not hang the report. binaryVersionWaitDelay is the
+// grace after it: a shim can leave a grandchild holding stdout, and without
+// WaitDelay Output() would wait for that pipe long after the deadline. Variables
+// so a test can pin both.
+var (
+	binaryVersionTimeout   = 3 * time.Second
+	binaryVersionWaitDelay = time.Second
+)
 
 // pathBinaries finds every cartographer on PATH. Each directory is asked on its
 // own with exec.LookPath, so the platform's rules (the execute bit, PATHEXT
@@ -59,7 +67,9 @@ func pathBinaries() []string {
 func binaryVersion(path string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), binaryVersionTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, path, "version").Output()
+	cmd := procattr.Hide(exec.CommandContext(ctx, path, "version"))
+	cmd.WaitDelay = binaryVersionWaitDelay
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -108,9 +118,21 @@ func checkPathBinaries() []doctorFinding {
 		}
 	}
 	svcListed := false
+	// The copies are asked at once, so the whole report waits for the slowest
+	// one (timeout plus WaitDelay), not for the sum of them.
+	versions := make([]string, len(copies))
+	var wg sync.WaitGroup
+	for i, c := range copies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			versions[i] = binaryVersionFn(c.path)
+		}()
+	}
+	wg.Wait()
 	parts := make([]string, len(copies))
 	for i, c := range copies {
-		v := binaryVersionFn(c.path)
+		v := versions[i]
 		if v == "" {
 			v = "version unknown"
 		}
