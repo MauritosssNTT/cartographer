@@ -79,7 +79,7 @@ func toolServiceGet(k *kb.KB) Tool {
 				},
 				"resolve_secrets": {
 					"type": "boolean",
-					"description": "If true, decrypt the service's secrets_source (flat SOPS file) and include the resolved secrets in the result. Requires a KB with an age key (<kb>.age or default.age in the server's credentials_dir) and rw scope. Default false."
+					"description": "If true, resolve the service's secret_refs (or decrypt its secrets_source, flat SOPS files) and include the resolved secrets in the result. Requires rw scope, and for SOPS a KB with an age key (<kb>.age or default.age in the server's credentials_dir); a hook reference is asked of its resolver hook. Default false."
 				},
 				"reveal": {
 					"type": "boolean",
@@ -392,7 +392,7 @@ func secretsSources(raw any) (sources []string, ok bool) {
 }
 
 func toolSecretResolve(k *kb.KB) Tool {
-	return Tool{Name: "secret_resolve", Description: "Resolves declared SOPS secret_refs for any concept (requires rw scope). Returns the key names with values redacted; pass reveal: true to return the values, which then appear in the transcript and in any log that captures it.", InputSchema: json.RawMessage(`{"type":"object","required":["concept_id"],"properties":{"concept_id":{"type":"string"},"names":{"type":"array","items":{"type":"string"}},"reveal":{"type":"boolean","description":"Return the secret values instead of <redacted>; they will appear in the transcript"}}}`), Handler: func(ctx requestContext, args json.RawMessage) (ToolResult, error) {
+	return Tool{Name: "secret_resolve", Description: "Resolves declared secret_refs (SOPS, or a resolver hook) for any concept (requires rw scope). Returns the key names with values redacted; pass reveal: true to return the values, which then appear in the transcript and in any log that captures it.", InputSchema: json.RawMessage(`{"type":"object","required":["concept_id"],"properties":{"concept_id":{"type":"string"},"names":{"type":"array","items":{"type":"string"}},"reveal":{"type":"boolean","description":"Return the secret values instead of <redacted>; they will appear in the transcript"}}}`), Handler: func(ctx requestContext, args json.RawMessage) (ToolResult, error) {
 		var p struct {
 			ConceptID string   `json:"concept_id"`
 			Names     []string `json:"names"`

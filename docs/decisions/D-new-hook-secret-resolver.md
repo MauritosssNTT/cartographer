@@ -15,8 +15,9 @@ The core's checks run first and are unchanged: `rw`, `secrets: none` (D1894), re
 **Why.** An external vault must be usable without copying its secrets into a KB, and without the
 server learning a vault's protocol. The resolver is a hook rather than part of `internal/sops`:
 that package is the hermetic `sops` child (D260) and must not learn HTTP, and a hook never sees
-the age key. A resolver is `fail_closed` by construction (no value is no resolution) and `mode`
-does not apply to it: a dry run hands back no value (D1957), which would only be a failure.
+the age key. A resolver is `fail_closed` by construction (no value is no resolution) and `mode: dry_run`
+is refused for it: a dry run hands back no value (D1957), and silently enforcing it instead would
+hand out live values to an operator who asked to observe.
 
 **Alternatives rejected.** Resolving at write time and storing the value: it puts the secret in
 git. Caching by default: a resolver that decides per caller would be bypassed; the hook opts in with

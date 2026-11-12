@@ -120,7 +120,7 @@ func TestResolveSecrets_Failures(t *testing.T) {
 	}
 }
 
-// A resolver is fail_closed, and mode does not apply to it.
+// A resolver is fail_closed, and dry_run is refused: it does not apply to it.
 func TestResolverConfig(t *testing.T) {
 	t.Parallel()
 	h := Hook{Name: "acme/vault", Point: PointSecretResolver, Plugin: "acme", URL: "https://example.com/v", Credential: "c", FailurePolicy: FailOpen}
@@ -128,8 +128,12 @@ func TestResolverConfig(t *testing.T) {
 		t.Fatalf("fail_open resolver: %v", err)
 	}
 	h.FailurePolicy, h.Mode = FailClosed, ModeDryRun
+	if err := h.Normalize(); err == nil || !strings.Contains(err.Error(), "dry_run does not apply") {
+		t.Fatalf("dry_run resolver: %v", err)
+	}
+	h.Mode = ""
 	if err := h.Normalize(); err != nil || h.Mode != ModeEnforce {
-		t.Fatalf("dry_run resolver: %v, mode %q", err, h.Mode)
+		t.Fatalf("resolver: %v, mode %q", err, h.Mode)
 	}
 }
 
