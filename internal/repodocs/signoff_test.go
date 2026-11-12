@@ -63,7 +63,9 @@ case "$*" in test-rerun*) exit "${FAKE_RERUN_RC:-0}" ;; esac
 exit "${FAKE_MAKE_RC:-0}"
 `, 0o755)
 	// --jq is applied as gh applies it; the hosted fallback's calls answer from
-	// FAKE_GH_DISPATCHED (the dispatched run) and FAKE_GH_JOBS (its jobs).
+	// FAKE_GH_BEFORE (the runs listed before the dispatch, default none), then, once
+	// `workflow run` was called, from FAKE_GH_DISPATCHED (the dispatched run) or, one
+	// line per poll (the last repeats), FAKE_GH_POLLS, and FAKE_GH_JOBS (its jobs).
 	e.write(filepath.Join(bin, "gh"), `#!/bin/bash
 echo "$*" >> "$FAKE_GH_LOG"
 jq_expr=; prev=
@@ -73,11 +75,17 @@ case "$1 $2" in
   "repo view") echo "$FAKE_PERM" ;;
   "run list")
     case "$*" in
-      *workflow_dispatch*) echo "${FAKE_GH_DISPATCHED:-[]}" | out ;;
+      *workflow_dispatch*)
+        if [ ! -f "$FAKE_GH_LOG.dispatched" ]; then body=${FAKE_GH_BEFORE:-[]}
+        elif [ -n "${FAKE_GH_POLLS:-}" ]; then
+          n=$(cat "$FAKE_GH_LOG.polls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE_GH_LOG.polls"
+          body=$(sed -n "${n}p" "$FAKE_GH_POLLS"); [ -n "$body" ] || body=$(tail -n 1 "$FAKE_GH_POLLS")
+        else body=${FAKE_GH_DISPATCHED:-[]}; fi
+        echo "$body" | out ;;
       *) if [ -f "$FAKE_GH_RUNS" ]; then cat "$FAKE_GH_RUNS"; else echo '[]'; fi | out ;;
     esac ;;
   "run view") printf '%s\n' "${FAKE_GH_JOBS:-}" | out ;;
-  "workflow run") exit "${FAKE_GH_DISPATCH_RC:-0}" ;;
+  "workflow run") touch "$FAKE_GH_LOG.dispatched"; exit "${FAKE_GH_DISPATCH_RC:-0}" ;;
   "pr view") exit 1 ;;
 esac
 exit 0
@@ -587,4 +595,42 @@ func TestSignoffFallsBackToCIWhenTheHostIsUnavailable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A retried signoff finds the finished ci.yml run of the same branch and sha its earlier
+// attempt left: the fallback follows only a run newer than the newest listed before the
+// dispatch, never that one, even while the new run is not listed yet (#1916).
+func TestSignoffHostedNeverPicksARunThatExistedBeforeTheDispatch(t *testing.T) {
+	green := `{"jobs":[{"name":"gate","status":"completed","conclusion":"success"}]}`
+	old := `[{"databaseId":5}]`
+	tmp := t.TempDir()
+	polls := filepath.Join(tmp, "polls.txt")
+	t.Run("the new run appears on a later poll", func(t *testing.T) {
+		e := newSignoffEnv(t)
+		e.branch(e.work, "feat/x", "x.txt")
+		e.write(polls, old+"\n"+old+"\n"+`[{"databaseId":9},{"databaseId":5}]`+"\n", 0o644)
+		out, ok := e.signoff(e.work, "FAKE_MAKE_RC=75", "FAKE_GH_BEFORE="+old, "FAKE_GH_POLLS="+polls, "FAKE_GH_JOBS="+green)
+		if !ok {
+			t.Fatalf("signoff failed\n%s", out)
+		}
+		log := e.log(e.ghLog)
+		if strings.Contains(log, "run view 5") || !strings.Contains(log, "run view 9") {
+			t.Errorf("the gate of run 9 is followed, never the earlier run 5:\n%s", log)
+		}
+		if p := e.posts(); len(p) != 1 || !strings.Contains(p[0], "ci.yml run 9") {
+			t.Errorf("the status names the dispatched run: %v", p)
+		}
+	})
+	t.Run("the new run never appears", func(t *testing.T) {
+		e := newSignoffEnv(t)
+		e.branch(e.work, "feat/x", "x.txt")
+		out, ok := e.signoff(e.work, "FAKE_MAKE_RC=75", "FAKE_GH_BEFORE="+old, "FAKE_GH_DISPATCHED="+old,
+			"FAKE_GH_JOBS="+green, "SIGNOFF_DISPATCH_TRIES=3")
+		if ok || !strings.Contains(out, "did not appear") {
+			t.Fatalf("an earlier run is not the dispatched one (ok=%v)\n%s", ok, out)
+		}
+		if strings.Contains(e.log(e.ghLog), "run view") || len(e.posts()) != 0 {
+			t.Errorf("nothing is followed or posted:\n%s", e.log(e.ghLog))
+		}
+	})
 }
