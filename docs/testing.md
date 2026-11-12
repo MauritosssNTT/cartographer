@@ -1095,21 +1095,28 @@ first goroutine; each name is cut to 60 characters, and listed once in the form 
 panic's entry cut is not named twice; the title is cut to 200 at a name boundary, `and N more`, since GitHub
 refuses one past 256). Every name, from the log or from a `signoff: flaky:` line, passes one filter (`safe_names` in
 `scripts/land.sh`) before it reaches a title, a body or a commit message, because the log holds the change's own
-output: only `[A-Za-z0-9_.-]` is kept (and a panic's ` (panic: <message>)` suffix, in `[A-Za-z0-9 _:-]`), (a `/` becomes `_`), so there is no `@`,
-`#`, `[`, `(` or `:`; the two autolinks that charset can still form are defused by rewriting the name, the same
-text in the title, the body and the commit message of a rejection: `www.` becomes `www_`, and a run of 7 to 40
-lowercase hex digits (a commit link) gets a `_` after it. The lines copied from the log into the body (the first failing
+output: only `[A-Za-z0-9_.-]` is kept (a `/` becomes `_`, and a panic's ` (panic: <message>)` suffix keeps its own
+`[A-Za-z0-9 _:-]`), so a name has no `@`, `#`, `[`, `!` or `/`, and `(` and `:` only in the panic suffix. The
+autolinks that charset can still form are defused by rewriting the name, the same text in the title, the body and the
+commit message of a rejection: `www.` becomes `www_`, `GH-<digit>` becomes `GH_<digit>`, and a run of 7 to 40 lowercase
+hex digits (a commit link) gets a `_` after it. The cut to 60 characters is part of that filter, never applied after it:
+a cut can leave a hex run with no `_` after it (a 60-character name ending `_deadbeef`), so the longest prefix that is
+inert once defused is kept. The lines copied from the log into the body (the first failing
 line of each e2e scenario) are printable ASCII without `@`, in an indented code block. Red again, the lander
 bisects over the train's prefixes (one signoff each) and rejects the first change whose
 prefix is red. When the signoff confirmed the failure on named Go tests, its `signoff: probe:`
 line names their packages and platform; the signoff also writes those words to the file the lander passes it in
-`SIGNOFF_PROBE_FILE` (a file of that gate, `gate-<id>.log.probefile`), and the lander reads the probe from that file only,
-never from the log: the log holds the change's own output, and a test can print a well-formed `signoff: probe:` line when
-the real signoff printed none (a panic, a build failure), which would send the bisection after the wrong change. The signoff
-takes the variable out of its environment before it runs any target, so `make` and the tests never see the path, and writes
-the file once, when its targets are done: a test that found the file anyway cannot leave its words there. The file is
-used only if it holds `linux` or `windows` and two comma-separated lists of `[A-Za-z0-9_./-]` words, none starting with `-`, or `-`;
-no file, an empty one or another shape is no probe and the bisection runs full gates. Each bisection step runs only those
+`SIGNOFF_PROBE_FILE` (a file of that gate, `gate-<id>.log.probefile`, made empty by the lander before the gate), and the
+lander reads the probe from that file only, never from the log: the log holds the change's own output, and a test can
+print a well-formed `signoff: probe:` line when the real signoff printed none (a panic, a build failure), which would send
+the bisection after the wrong change. The file is no safer than the log: it is listable in the state directory, and a test
+can write it, make it read-only so the signoff's write fails, or kill the signoff. So a line counts only if it starts with
+a token the lander draws at random for each gate and hands the signoff on file descriptor 3, never in the environment, an
+argument or the log: the signoff reads it, closes the descriptor and unsets `SIGNOFF_PROBE_FILE` before any target runs, then
+writes `<token> <words>` once, when its targets are done. The lander compares the token in the shell and keeps the file only
+if the signoff's own exit was the red one (1). The words are used only if they are `linux` or `windows` and two
+comma-separated lists of `[A-Za-z0-9_./-]` words, none starting with `-`, or `-`;
+no file, an empty one, one without the token or another shape is no probe and the bisection runs full gates. Each bisection step runs only those
 packages (`scripts/signoff.sh --probe`, a minute or two instead of a full signoff, D1878);
 the prefix before the rejected change then gets one full signoff before it lands (red: the
 train is composed again), and a probe whose machine is unavailable, or whose wrapper failed with an exit that is not the platform's

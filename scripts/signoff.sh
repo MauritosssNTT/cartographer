@@ -49,9 +49,32 @@
 #                 reported and skipped (test-windows on main stays the net), any other
 #                 exit is the wrapper's: `the Windows machine failed (exit N) before the
 #                 gate finished` (step 4d).
+#   SIGNOFF_PROBE_FILE  the lander's file for the probe of a confirmed failure, with a token
+#                 on file descriptor 3 (`3<<<"$token"`): the file gets `<token> <words>` when the
+#                 run ends, the words of the `signoff: probe:` line (step 4c), and an empty line
+#                 when nothing was confirmed; no token, nothing written. Both are taken before
+#                 any command runs: the variable is unset and descriptor 3 closed, so no target
+#                 sees the path or the token (scripts/land.sh probe_of accepts nothing without it).
 #
 # Plain bash 3.2 (the macOS default): no associative arrays, no GNU-only flags.
 set -euo pipefail
+
+# The lander's out-of-band channel for the probe (SIGNOFF_PROBE_FILE and file descriptor 3,
+# scripts/land.sh): the path of a file this run fills, once, with `<token> <words>` (the words of
+# its `signoff: probe:` line), the token being the line read from descriptor 3. The lander accepts
+# the file only with its token, which a test on its machine cannot know: it is in no environment,
+# no argv and no log, and descriptor 3 is closed here, before any command of this script runs.
+# The path is read into a plain variable and removed from the environment too, so no child (make,
+# the tests under test) inherits it; the file is written by the exit trap of step 4, after every
+# target is done, so what a test wrote there is gone. Without a token, nothing is written.
+probe_file=${SIGNOFF_PROBE_FILE:-} probe_token= probe_words=
+unset SIGNOFF_PROBE_FILE
+if [ -n "$probe_file" ]; then read -r -u 3 probe_token 2>/dev/null || probe_token=; fi
+exec 3<&-
+write_probe() {
+  [ -n "$probe_file" ] && [ -n "$probe_token" ] || return 0
+  if [ -n "$probe_words" ]; then printf '%s %s\n' "$probe_token" "$probe_words"; else echo; fi 2>/dev/null >"$probe_file" || true
+}
 
 # The targets a signoff runs; `web-gate` is added when the diff needs it. Only
 # test-install stays post-merge (it runs on push to main); a broken e2e scenario must
@@ -64,14 +87,6 @@ die() { echo "signoff: $*" >&2; exit 1; }
 here=$(cd "$(dirname "$0")" && pwd)
 cd "$(git rev-parse --show-toplevel)"
 
-# The lander's out-of-band channel for the probe (SIGNOFF_PROBE_FILE, scripts/land.sh): the
-# path of a file this run fills with the words of its `signoff: probe:` line, and nothing else.
-# It is read into a plain shell variable and removed from the environment before any target
-# runs, so no child (make, the tests under test) inherits the path; the file is written once,
-# by the exit trap of step 4, after every target is done, so what a test wrote there is gone.
-probe_file=${SIGNOFF_PROBE_FILE:-}
-unset SIGNOFF_PROBE_FILE
-probe_words=
 
 # signoff.sh --probe <linux|windows> <packages> <race packages> (comma-separated, `-` for
 # none): the lander's bisection step (scripts/land.sh, D1878). It runs, on this
@@ -312,7 +327,7 @@ if [ -n "$win_pkgs" ]; then
 fi
 # The leg's wrapper is a child of the subshell: stop it too, or it keeps the machine busy.
 mlog=$(mktemp "${TMPDIR:-/tmp}/signoff-make.XXXXXX")
-trap '[ -z "$win_pid" ] || { pkill -TERM -P "$win_pid" 2>/dev/null; kill "$win_pid" 2>/dev/null; } || true; [ -z "$win_log" ] || rm -f "$win_log" "$win_log.end"; rm -f "$mlog"; [ -z "$probe_file" ] || printf "%s\n" "$probe_words" >"$probe_file" 2>/dev/null || true' EXIT
+trap '[ -z "$win_pid" ] || { pkill -TERM -P "$win_pid" 2>/dev/null; kill "$win_pid" 2>/dev/null; } || true; [ -z "$win_log" ] || rm -f "$win_log" "$win_log.end"; rm -f "$mlog"; write_probe' EXIT
 # -k: a red run still runs every other target, so its log is the whole evidence (4c).
 # Only make's own failure (exit 2) is retried, and on Windows the shards' (exit 1): any
 # other exit is the wrapper's, and the log may then stop before the targets did.

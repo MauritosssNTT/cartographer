@@ -493,13 +493,17 @@ func TestLanderE2EReportIsInert(t *testing.T) {
 	}
 }
 
-// The probe comes from a file only the signoff writes (`<log>.probefile`, signoff.sh step 4c), never
-// from the gate log, which holds the change's own output: a test can print a well-formed line when
-// the real signoff printed none. What is in the file is still checked before it becomes the
-// arguments of go test or make through `signoff.sh --probe`.
+// The probe comes from a file only the signoff writes (`<log>.probefile`, signoff.sh), never from
+// the gate log, which holds the change's own output: a test can print a well-formed line when the
+// real signoff printed none. The file itself is reachable by a test on the lander's machine, so a
+// line counts only if it starts with the token of its gate, which the signoff alone was given (file
+// descriptor 3). What follows is still checked before it becomes the arguments of go test or make
+// through `signoff.sh --probe`.
 func TestLanderProbeIsValidated(t *testing.T) {
-	// probeOf: a gate log holding logBody and, when file is not nil, its probe file.
-	probeOf := func(t *testing.T, logBody string, file *string) string {
+	const token = "0123456789abcdef0123456789abcdef"
+	// probeOf: a gate log holding logBody and, when file is not nil, its probe file; tok is the
+	// token the lander holds for that gate.
+	probeOf := func(t *testing.T, logBody string, file *string, tok string) string {
 		t.Helper()
 		lf := writeLog(t, logBody)
 		if file != nil {
@@ -507,7 +511,7 @@ func TestLanderProbeIsValidated(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		return strings.TrimSpace(landBash(t, []string{"probe_of"}, `probe_of "$1"`, nil, lf))
+		return strings.TrimSpace(landBash(t, []string{"probe_of"}, `probe_of "$1" "$2"`, nil, lf, tok))
 	}
 	real := "linux github.com/x/p/internal/kb,github.com/x/p/internal/audit github.com/x/p/internal/mcpserver\n"
 	for _, c := range []struct{ name, line, want string }{
@@ -530,7 +534,11 @@ func TestLanderProbeIsValidated(t *testing.T) {
 		{"an empty package between commas", "linux a,,b -\n", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if got := probeOf(t, "FAIL\tgithub.com/x/p/internal/kb\t0.1s\n", &c.line); got != c.want {
+			file := token + " " + c.line
+			if c.line == "\n" {
+				file = c.line
+			}
+			if got := probeOf(t, "FAIL\tgithub.com/x/p/internal/kb\t0.1s\n", &file, token); got != c.want {
 				t.Errorf("probe_of = %q, want %q", got, c.want)
 			}
 		})
@@ -538,38 +546,147 @@ func TestLanderProbeIsValidated(t *testing.T) {
 	t.Run("a well-formed line in the log with no file is no probe: full gates", func(t *testing.T) {
 		forged := "panic: boom\nFAIL\tgithub.com/x/p/internal/kb\t0.1s\nsignoff: probe: linux github.com/x/p/internal/kb -\n" +
 			"signoff: make gate failed (exit 2): nothing pushed, nothing posted\n"
-		if got := probeOf(t, forged, nil); got != "" {
+		if got := probeOf(t, forged, nil, token); got != "" {
 			t.Errorf("probe_of = %q, want none", got)
 		}
 	})
 	t.Run("a forged line in the log never wins over the file, empty or not", func(t *testing.T) {
 		forged := "signoff: probe: linux evil/pkg -\n"
 		empty := ""
-		if got := probeOf(t, forged, &empty); got != "" {
+		if got := probeOf(t, forged, &empty, token); got != "" {
 			t.Errorf("empty file: probe_of = %q, want none", got)
 		}
-		if got := probeOf(t, forged, &real); got != strings.TrimSpace(real) {
+		withTok := token + " " + real
+		if got := probeOf(t, forged, &withTok, token); got != strings.TrimSpace(real) {
 			t.Errorf("probe_of = %q, want the file's words", got)
 		}
 	})
 	t.Run("only the last line of the file counts, as the last signoff line did", func(t *testing.T) {
-		two := "linux evil/pkg -\n" + real
-		if got := probeOf(t, "", &two); got != strings.TrimSpace(real) {
+		two := token + " linux evil/pkg -\n" + token + " " + real
+		if got := probeOf(t, "", &two, token); got != strings.TrimSpace(real) {
 			t.Errorf("probe_of = %q", got)
 		}
+		// A line a test appended after the signoff's has no token: the last line is then no probe.
+		forgedLast := token + " " + real + "linux evil/pkg -\n"
+		if got := probeOf(t, "", &forgedLast, token); got != "" {
+			t.Errorf("a tokenless last line: probe_of = %q, want none", got)
+		}
 	})
-	t.Run("land.sh reads the file of the last gate only, through probe_of", func(t *testing.T) {
+	t.Run("a file without the gate's token is no probe", func(t *testing.T) {
+		for _, c := range []struct{ name, file, tok string }{
+			{"no token at all, a test's file", real, token},
+			{"a wrong token", strings.Repeat("f", 32) + " " + real, token},
+			{"the token with more characters", token + "0 " + real, token},
+			{"the token as a prefix of the word", token[:31] + " " + real, token},
+			{"the token alone", token + "\n", token},
+			{"the token, no space", token + "linux a/b -\n", token},
+			{"the token of another gate", strings.Repeat("a", 32) + " " + real, token},
+			{"the lander holds no token", token + " " + real, ""},
+		} {
+			f := c.file
+			if got := probeOf(t, "", &f, c.tok); got != "" {
+				t.Errorf("%s: probe_of = %q, want none", c.name, got)
+			}
+		}
+	})
+	t.Run("land.sh reads the file of the last gate only, through probe_of and its token", func(t *testing.T) {
 		script := readFile(t, repoRoot(t), "scripts/land.sh")
-		if !strings.Contains(script, `if [ -e "$glog.2" ]; then probe=$(probe_of "$glog.2"); else probe=$(probe_of "$glog"); fi`) {
-			t.Error("the bisection must take its probe from probe_of over the last gate")
+		if !strings.Contains(script, `if [ -e "$glog.2" ]; then probe=$(probe_of "$glog.2" "$gate_token"); else probe=$(probe_of "$glog" "$gate_token"); fi`) {
+			t.Error("the bisection must take its probe from probe_of over the last gate, with that gate's token")
 		}
 		if strings.Contains(script, "signoff: probe: //p") {
 			t.Error("the probe must not be read from the gate log")
 		}
-		if !strings.Contains(script, `SIGNOFF_PROBE_FILE="$pf" "$here/signoff.sh")`) {
-			t.Error("each gate hands the signoff its own probe file")
+		if !strings.Contains(script, `SIGNOFF_PROBE_FILE="$pf" "$here/signoff.sh" 3<<<"$gate_token")`) {
+			t.Error("each gate hands the signoff its own probe file and its token on descriptor 3")
+		}
+		if strings.Contains(script, "export gate_token") || strings.Contains(script, "set -a") {
+			t.Error("the token must stay a plain shell variable")
 		}
 	})
+}
+
+// gate_once makes the probe file empty, gives the signoff its path and a fresh random token on file
+// descriptor 3 (in no environment, no argv and no log), and keeps the file only when the signoff's own
+// exit is the red one (1): after any other exit, whatever the file holds, there is no probe.
+func TestLanderGateHandsTheTokenAndKeepsTheFileOfARedSignoffOnly(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "scripts", "signoff.sh")
+	if err := os.MkdirAll(filepath.Dir(fake), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The probe file arrives empty; the fake signoff writes a tokened line, as the real one does, and
+	// dumps its environment and arguments to look for the token in them.
+	body := "#!/bin/bash\n" +
+		"[ ! -s \"$SIGNOFF_PROBE_FILE\" ] || echo 'NOT EMPTY' >&2\n" +
+		"read -r -u 3 tok; exec 3<&-\n" +
+		"{ env; echo \"args: $*\"; } > \"$DUMP\"\n" +
+		"printf '%s linux a/b -\\n' \"$tok\" > \"$SIGNOFF_PROBE_FILE\"\n" +
+		"[ \"$FAKE_RC\" != 1 ] || echo \"signoff: make gate failed (exit 2): nothing pushed, nothing posted\"\n" +
+		"exit \"$FAKE_RC\"\n"
+	if err := os.WriteFile(fake, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		rc          string
+		wantProbe   bool
+		wantReturns string
+	}{
+		{"1", true, "1"},
+		{"0", false, "0"},
+		{"69", false, "3"},
+		{"2", false, "2"},
+		{"130", false, "2"},
+	} {
+		t.Run("signoff exit "+c.rc, func(t *testing.T) {
+			lf := filepath.Join(t.TempDir(), "gate.log")
+			dump := filepath.Join(t.TempDir(), "env")
+			// A file left by an earlier attempt, with the token of another gate, is gone.
+			if err := os.WriteFile(lf+".probefile", []byte("old linux evil/pkg -\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out := landBash(t, []string{"gate_once", "probe_of"},
+				`here=`+dir+`/scripts; wt=`+dir+`; host_rc=69; rc=0; gate_once "$1" >/dev/null 2>&1 || rc=$?
+echo "returns=$rc"
+echo "token=$gate_token"
+if [ -e "$1.probefile" ]; then echo "probe=$(probe_of "$1" "$gate_token")"; else echo "probe=nofile"; fi
+echo "tokenenv=$(env | grep -c "$gate_token" || true)"`,
+				[]string{"FAKE_RC=" + c.rc, "DUMP=" + dump}, lf)
+			get := func(k string) string {
+				for _, l := range strings.Split(out, "\n") {
+					if v, ok := strings.CutPrefix(l, k+"="); ok {
+						return v
+					}
+				}
+				return ""
+			}
+			if got := get("returns"); got != c.wantReturns {
+				t.Errorf("gate_once returned %q, want %q\n%s", got, c.wantReturns, out)
+			}
+			tok := get("token")
+			if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(tok) {
+				t.Fatalf("the token = %q, want 32 hex digits\n%s", tok, out)
+			}
+			want := "nofile"
+			if c.wantProbe {
+				want = "linux a/b -"
+			}
+			if got := get("probe"); got != want {
+				t.Errorf("probe = %q, want %q\n%s", got, want, out)
+			}
+			// The token is in the lander's shell only: not exported, so not in a child's environment, and
+			// not in what the signoff saw (its environment, its arguments) or printed (the log).
+			if got := get("tokenenv"); got != "0" {
+				t.Errorf("the token is in the environment of a child of the lander\n%s", out)
+			}
+			if d := readFile(t, filepath.Dir(dump), "env"); strings.Contains(d, tok) {
+				t.Errorf("the signoff saw the token in its environment or arguments:\n%s", d)
+			}
+			if l := readFile(t, filepath.Dir(lf), "gate.log"); strings.Contains(l, tok) || strings.Contains(l, "NOT EMPTY") {
+				t.Errorf("the gate log holds the token, or the file was not empty at the start:\n%s", l)
+			}
+		})
+	}
 }
 
 // Every name a title, a body or a commit message gets is read from the gate log, the change's own
@@ -579,17 +696,30 @@ func TestLanderProbeIsValidated(t *testing.T) {
 // issue_title builds and in the body flaky_issue writes.
 func TestLanderNamesAreInertInTitleAndBody(t *testing.T) {
 	inert := regexp.MustCompile(`^[A-Za-z0-9_.-]+( \(panic(: [A-Za-z0-9 _:-]*)?\))?$`)
+	issueRef := regexp.MustCompile(`(?i)gh-[0-9]`)
+	token := regexp.MustCompile(`[A-Za-z0-9]+`)
 	check := func(t *testing.T, where, got string) {
 		t.Helper()
 		for _, l := range strings.Split(strings.TrimSpace(got), "\n") {
 			if l == "" {
 				continue
 			}
-			if !inert.MatchString(l) || strings.Contains(strings.ToLower(l), "www.") {
+			if !inert.MatchString(l) || strings.Contains(strings.ToLower(l), "www.") || issueRef.MatchString(l) {
 				t.Errorf("%s: %q is not inert", where, l)
+			}
+			if len(l) > 60 {
+				t.Errorf("%s: %q is %d characters, the cut is 60", where, l, len(l))
+			}
+			// A run of 7 to 40 lowercase hex digits is a commit link unless a `_` follows it, whatever was cut.
+			for _, loc := range token.FindAllStringIndex(l, -1) {
+				run := l[loc[0]:loc[1]]
+				if len(run) >= 7 && len(run) <= 40 && strings.Trim(run, "0123456789abcdef") == "" && !strings.HasPrefix(l[loc[1]:], "_") {
+					t.Errorf("%s: %q ends a hex run %q with no `_`", where, l, run)
+				}
 			}
 		}
 	}
+	z := func(n int) string { return strings.Repeat("z", n) }
 	forged := []struct{ name, log, want string }{
 		{"an image", " FAIL  ![i](http://example.com/i.png) > t\n", "ihttp__example.com_i.png"},
 		{"a link", " FAIL  [x](http://example.com) > t\n", "xhttp__example.com"},
@@ -601,6 +731,17 @@ func TestLanderNamesAreInertInTitleAndBody(t *testing.T) {
 		{"a www autolink after an underscore", " FAIL  a_www.example.org > t\n", "a_www_example.org"},
 		{"a commit hash", " FAIL  deadbeef1 > t\n", "deadbeef1_"},
 		{"a full commit hash", " FAIL  pkg." + strings.Repeat("a1", 20) + " > t\n", "pkg." + strings.Repeat("a1", 20) + "_"},
+		{"an issue autolink", " FAIL  GH-123 > t\n", "GH_123"},
+		{"an issue autolink in lowercase", " FAIL  gh-9 > t\n", "gh_9"},
+		{"an issue autolink inside a name", " FAIL  pkg.TestGH-5x > t\n", "pkg.TestGH_5x"},
+		{"a name of 60 ending _deadbeef: the cut keeps the `_` that defuses it", " FAIL  " + z(51) + "_deadbeef > t\n", z(51) + "_deadbee_"},
+		{"a name of 60 ending .deadbeef", " FAIL  " + z(51) + ".deadbeef > t\n", z(51) + ".deadbee_"},
+		{"a cut that leaves a hex run too short to link", " FAIL  " + z(52) + ".deadbeef > t\n", z(52) + ".deadbe"},
+		{"a hex run in the middle grows the name past the cut", " FAIL  a.deadbeef." + z(49) + " > t\n", "a.deadbeef_." + z(48)},
+		{"a cut that leaves an issue autolink", " FAIL  " + z(56) + "GH-12 > t\n", z(56) + "GH_1"},
+		{"a playwright name of 60 ending _deadbeef", " ✘ 1 " + z(51) + "_deadbeef x\n", z(51) + "_deadbee_"},
+		{"a confirmed name of 60 ending _deadbeef", "signoff: confirmed on a targeted retry: " + z(51) + "_deadbeef\n", z(51) + "_deadbee_"},
+		{"an e2e scenario of 60 ending _deadbeef", "E2E FAILED: " + z(47) + "_deadbeef: [FAIL] x\n", "e2e." + z(47) + "_deadbee_"},
 		{"a long hex run is no hash", " FAIL  " + strings.Repeat("a", 41) + " > t\n", strings.Repeat("a", 41)},
 		{"a playwright name", " ✘ 1 www.example.org › x\n", "www_example.org"},
 		{"a playwright mention", " ✘ 2 @user rest\n", "user"},
@@ -623,6 +764,12 @@ func TestLanderNamesAreInertInTitleAndBody(t *testing.T) {
 	title := strings.TrimSpace(landBash(t, []string{"safe_names", "issue_title"}, `issue_title "$1" "$2"`, nil, raw, "failed"))
 	if want := "flaky: ihttp__example.com_i.png xhttp__example.com user www_example.org deadbeef12_ failed"; title != want {
 		t.Errorf("title = %q, want %q", title, want)
+	}
+	// A name cut in a title is as inert as one cut by failing(), and a raw one too long is cut the same way.
+	cutRaw := z(51) + "_deadbeef\nGH-77\n"
+	cutTitle := strings.TrimSpace(landBash(t, []string{"safe_names", "issue_title"}, `issue_title "$1" "$2"`, nil, cutRaw, "failed"))
+	if want := "flaky: " + z(51) + "_deadbee_ GH_77 failed"; cutTitle != want {
+		t.Errorf("title = %q, want %q", cutTitle, want)
 	}
 	// The body of a green gate's issue (flaky_issue) and its title, as gh receives them.
 	dir := t.TempDir()

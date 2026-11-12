@@ -97,6 +97,14 @@ if [ -n "${FAKE_MOVE_MAIN:-}" ] && [ ! -e "$FAKE_STATE.moved" ]; then
   c=$(echo "chore: other" | git --git-dir="$FAKE_UP" commit-tree "$(git --git-dir="$FAKE_UP" rev-parse 'main^{tree}')" -p main)
   git --git-dir="$FAKE_UP" update-ref refs/heads/main "$c"
 fi
+# A test that finds the lander's probe file of this gate and writes a probe of its own there
+# (FORGEFILE; FORGEFILE_RO also makes it read-only, so the signoff cannot overwrite it).
+if [ -e FORGEFILE ]; then
+  for f in "$LAND_STATE"/gate-*.probefile; do
+    [ -e "$f" ] || continue
+    { echo 'linux github.com/x/p/evil -' > "$f"; [ ! -e FORGEFILE_RO ] || chmod 444 "$f"; } 2>/dev/null || true
+  done
+fi
 if [ -e CONFIRMED ] || { [ -e FLAKYGO ] && [ ! -e "$FAKE_STATE.flakedgo" ]; }; then
   touch "$FAKE_STATE.flakedgo"
   # A test that prints the signoff's line for a lost host, at the start of a line (SPOOF).
@@ -540,6 +548,55 @@ func TestLanderIgnoresAProbeLineForgedInTheGateLog(t *testing.T) {
 	}
 	if mk := e.makeLog(); strings.Contains(mk, "test-rerun") {
 		t.Errorf("no probe may run:\n%s", mk)
+	}
+}
+
+// The probe file of a gate is reachable by the tests the gate runs, so the lander trusts a line in it
+// only with the token the signoff alone was given (file descriptor 3). A test that writes its own
+// probe there cannot steer the bisection: the signoff overwrites it with the real, tokened words, or,
+// when the test made the file read-only, the tokenless line is ignored and every prefix gets a full gate.
+func TestLanderIgnoresAProbeFileForgedByATest(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		readOnly  bool
+		wantProbe bool
+	}{
+		{"a file the signoff overwrites", false, true},
+		{"a read-only file", true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.readOnly && os.Geteuid() == 0 {
+				t.Skip("root writes through a read-only file")
+			}
+			e := newLandEnv(t)
+			e.queue("a", "fix(kb): a\n", "2026-01-01T10:00:00Z", map[string]string{"a2.txt": "a\n"})
+			files := map[string]string{"CONFIRMED": "x\n", "FORGEFILE": "x\n"}
+			if c.readOnly {
+				files["FORGEFILE_RO"] = "x\n"
+			}
+			e.queue("b", "fix(kb): b\n", "2026-01-01T11:00:00Z", files)
+			e.queue("c", "fix(kb): c\n", "2026-01-01T12:00:00Z", map[string]string{"c.txt": "c\n"})
+			out, ok := e.land()
+			if !ok {
+				t.Fatalf("land failed\n%s", out)
+			}
+			if got := strings.Join(e.mainSubjects(), " | "); got != "fix(kb): a | fix(kb): c" {
+				t.Fatalf("main holds %q, want a, then c\n%s", got, out)
+			}
+			if e.refs("failed/") != "b" {
+				t.Fatalf("b must be rejected: failed=%q\n%s", e.refs("failed/"), out)
+			}
+			probing := strings.Contains(out, "bisecting with the confirmed tests only: linux github.com/x/p/internal/kb -")
+			if probing != c.wantProbe {
+				t.Errorf("bisecting with the probe = %v, want %v\n%s", probing, c.wantProbe, out)
+			}
+			if mk := e.makeLog(); strings.Contains(mk, "evil") || strings.Contains(out, "evil") {
+				t.Errorf("the forged probe ran or was used:\n%s\n%s", mk, out)
+			}
+			if !c.wantProbe && strings.Contains(out, "bisecting with the confirmed tests only") {
+				t.Errorf("a tokenless probe steered the bisection\n%s", out)
+			}
+		})
 	}
 }
 
