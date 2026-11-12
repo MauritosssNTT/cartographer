@@ -103,9 +103,9 @@ type Snapshot struct {
 	// TokenMissing (ModeClient): the client config asks for a token and none
 	// resolved, so the probe was anonymous and the KB list is absent.
 	TokenMissing bool
-	// Foreign (ModeLocal): the address of the server config, where a program
-	// answers that is not a Cartographer server (ErrForeignListener); State is
-	// StateStopped. Empty otherwise.
+	// Foreign: the address (the server config's in ModeLocal, the server_url
+	// host in ModeClient) where a program answers that is not a Cartographer
+	// server (ErrForeignListener); State is StateStopped. Empty otherwise.
 	Foreign string
 	// Rejected (ModeClient): the server answered 401 or 403 to the client
 	// token, so it is up but this client may not read it.
@@ -228,6 +228,14 @@ func ClassifyClient(health *client.Health, err error, target ClientTarget) Snaps
 	case errors.As(err, &remote) && (remote.Code == client.CodeUnauthorized || remote.HTTPStatus == 401 || remote.HTTPStatus == 403):
 		snap.State = StateStopped
 		snap.Rejected = true
+	case errors.Is(err, ErrForeignListener):
+		// A 200 that is not a Cartographer /health: a program holds the address
+		// (#1998), never Running.
+		snap.State = StateStopped
+		snap.Foreign = snap.Server
+		if snap.Foreign == "" {
+			snap.Foreign = "the server address"
+		}
 	case err != nil || health == nil:
 		snap.State = StateStopped
 	default:

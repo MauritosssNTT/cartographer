@@ -124,8 +124,17 @@ func probeHealthRaw(addr string) (*client.Health, error) {
 // scheme and the client's rules (client.CheckServerURL inside Health): no
 // forced http://, no loopback rewrite. The token travels in the Authorization
 // header of this one request.
+//
+// A 200 whose body is not a Cartographer /health is ErrForeignListener, the
+// same shape rule as the local probe (#1998). A remote's own refusals (401,
+// 5xx, a proxy's error page) keep their error: only a well-formed answer of
+// another program is foreign here.
 func probeClient(t ClientTarget) (*client.Health, error) {
-	return client.New(t.ServerURL, t.Token).WithInsecureHTTP(t.AllowInsecureHTTP).Health(probeTimeout)
+	h, err := client.New(t.ServerURL, t.Token).WithInsecureHTTP(t.AllowInsecureHTTP).Health(probeTimeout)
+	if err == nil && !h.IsServer() {
+		return nil, ErrForeignListener
+	}
+	return h, err
 }
 
 // Run probes every interval and calls emit with the first snapshot and then

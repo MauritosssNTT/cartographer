@@ -82,3 +82,44 @@ func TestForeignCheckLeavesOtherErrorsAlone(t *testing.T) {
 		t.Error("a refused connection read as foreign")
 	}
 }
+
+// Client mode reads the same shape: a 200 JSON without a version is a program
+// on the server address, never Running (#1998).
+func TestProbeClientForeignListener(t *testing.T) {
+	foreignSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"status":"ok","kbs":[{"name":"kb-a"}],"ready":true}`))
+	}))
+	defer foreignSrv.Close()
+	target := ClientTarget{Present: true, ServerURL: foreignSrv.URL + "/mcp"}
+	h, err := probeClient(target)
+	if !errors.Is(err, ErrForeignListener) || h != nil {
+		t.Fatalf("probeClient = %+v, %v, want ErrForeignListener", h, err)
+	}
+	snap := ClassifyClient(h, err, target)
+	addr := strings.TrimPrefix(foreignSrv.URL, "http://")
+	if snap.State != StateStopped || snap.Foreign != addr || snap.Version != "" || snap.KBCount != -1 {
+		t.Errorf("snapshot = %+v, want Stopped, Foreign=%s", snap, addr)
+	}
+	if got := StatusLine(snap); got != "another program answers on "+addr {
+		t.Errorf("StatusLine = %q", got)
+	}
+	if head := InfoItems(snap)[0]; head.Badge != "Port in use" || head.Tone != ToneDown {
+		t.Errorf("head = %+v", head)
+	}
+
+	ours := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"status":"ok","version":"1.2.3","ready":true}`))
+	}))
+	defer ours.Close()
+	target = ClientTarget{Present: true, ServerURL: ours.URL + "/mcp"}
+	h, err = probeClient(target)
+	if got := ClassifyClient(h, err, target); err != nil || got.State != StateRunning || got.Foreign != "" {
+		t.Errorf("a Cartographer server = %+v (%v)", got, err)
+	}
+
+	refused := &client.RemoteError{State: client.RemoteUnavailable, Code: client.CodeUnreachable}
+	down := ClassifyClient(nil, refused, ClientTarget{Present: true, ServerURL: "https://example.com:8443/mcp"})
+	if down.Foreign != "" || StatusLine(down) != "example.com:8443: unreachable" {
+		t.Errorf("unreachable = %+v / %q", down, StatusLine(down))
+	}
+}
