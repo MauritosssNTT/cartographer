@@ -38,7 +38,7 @@ func osOpen(target string) error {
 
 // OpenURL opens the Atlas URL. Only a URL the tray built is accepted: http or
 // https, a path ending in /ui/ with no "." or ".." segment (a reverse proxy may
-// add a prefix), no userinfo or fragment, and at most the one kb query KBURL adds.
+// add a prefix), no userinfo or fragment, and at most the one kb query webui.KBURL adds.
 func OpenURL(raw string) error {
 	refuse := fmt.Errorf("tray: refusing to open %q", raw)
 	u, err := url.Parse(raw)

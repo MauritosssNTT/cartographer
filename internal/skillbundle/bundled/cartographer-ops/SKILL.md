@@ -135,7 +135,9 @@ A KB syncs exactly when it has a remote, and every write is one commit: neither 
 The Atlas is the read-only browser view of the KBs: the graph, each concept with its links, the
 lint findings. When the user asks to see a KB, give them `ui_url` from `kb_status`: the link opens
 that KB (by default `http://127.0.0.1:39273/ui/?kb=<name>`). On the machine itself,
-`cartographer service status` prints the same address on its `ui:` line. No `ui_url` means this
+`cartographer service status` prints the same address on its `ui:` line. It is the address the
+server listens on: for a server on another machine or behind a proxy, give the address the user
+reaches the server by, with the same `/ui/?kb=<name>`. No `ui_url` means this
 server serves no Atlas: it runs over stdio, or `CARTOGRAPHER_WEB_ENABLED=false` (`web.enabled`)
 turned it off, or the service is stopped (`cartographer service start`). Never tell the user
 there is no graphical view before checking.
