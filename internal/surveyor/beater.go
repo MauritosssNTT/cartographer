@@ -66,8 +66,12 @@ type Beater struct {
 	// once: it runs on the beater's goroutine, never the runner's, and reads the
 	// generation before the sources, so a change in between is posted next beat.
 	Sources func() ([]surveyorconfig.Source, uint64)
-	Now     func() time.Time // time.Now when nil
-	Logf    func(format string, args ...any)
+	// Candidates, when set, is the record of what the Surveyor noticed that a
+	// person would report (feedback.go). Its pending entries ride the runs
+	// report; a protocol the two sides cannot agree on is noted here too.
+	Candidates *CandidateLog
+	Now        func() time.Time // time.Now when nil
+	Logf       func(format string, args ...any)
 
 	sendMu sync.Mutex // one request at a time
 
@@ -163,6 +167,9 @@ type runsBody struct {
 	Perimeter string      `json:"perimeter"`
 	Runs      []runsRun   `json:"runs"`
 	Alarms    []runsAlarm `json:"alarms"`
+	// Candidates are the report candidates the server has not seen
+	// (componentproto.MaxCandidatesPerPost at most), as ages the server dates.
+	Candidates []runsCandidate `json:"report_candidates,omitempty"`
 }
 
 func (b *Beater) interval() time.Duration {
@@ -323,6 +330,7 @@ func (b *Beater) send() {
 				b.loggedRefusal = pair
 				b.mu.Unlock()
 				if first {
+					b.Candidates.Note(componentproto.CandidateProtocolMismatch, "", "", "protocol_refused")
 					b.logf("surveyor: the server refuses component protocol %d (it speaks %d, serves from %d): idle signal unknown until it is upgraded or this Surveyor is",
 						componentproto.Protocol, re.ServerProtocol, re.ServerMinProtocol)
 				}
@@ -339,6 +347,7 @@ func (b *Beater) send() {
 		b.answer = nil
 		b.mu.Unlock()
 		if first {
+			b.Candidates.Note(componentproto.CandidateProtocolMismatch, "", "", "server_behind")
 			b.logf("surveyor: the server speaks component protocol %d, two or more below %d: idle signal unknown", a.Protocol, componentproto.Protocol)
 		}
 		return
@@ -422,17 +431,18 @@ func (b *Beater) postRuns(a *client.HeartbeatAnswer) {
 		b.mu.Unlock()
 		return
 	}
+	cands, sentCands := b.Candidates.pending(a.RunsWanted)
 	var batch []int
 	for i, q := range b.runs {
 		if !q.sent || a.RunsWanted {
 			batch = append(batch, i)
 		}
 	}
-	if len(batch) == 0 && !b.alarmsDirty && !(a.RunsWanted && len(b.alarms) > 0) {
+	if len(batch) == 0 && !b.alarmsDirty && !(a.RunsWanted && len(b.alarms) > 0) && len(cands) == 0 {
 		b.mu.Unlock()
 		return
 	}
-	body := runsBody{Protocol: componentproto.Protocol, ID: b.Surveyor, Perimeter: b.Perimeter, Runs: []runsRun{}, Alarms: []runsAlarm{}}
+	body := runsBody{Protocol: componentproto.Protocol, ID: b.Surveyor, Perimeter: b.Perimeter, Runs: []runsRun{}, Alarms: []runsAlarm{}, Candidates: cands}
 	for _, i := range batch {
 		r := b.runs[i].Run
 		body.Runs = append(body.Runs, runsRun{RunID: r.ID, Task: r.Task, KB: r.KB, StartedAt: r.Started.UTC(),
@@ -481,6 +491,7 @@ func (b *Beater) postRuns(a *client.HeartbeatAnswer) {
 		b.alarmsDirty = false
 	}
 	b.mu.Unlock()
+	b.Candidates.confirm(sentCands)
 }
 
 // IdleFor reads the last answer: the KB's idle time on the server's clock

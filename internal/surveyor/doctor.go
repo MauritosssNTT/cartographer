@@ -301,7 +301,11 @@ func linkTargets(tools ToolCaller, pages []string) []string {
 				Missing bool   `json:"missing"`
 			} `json:"neighbors"`
 		}
-		if err != nil || res.IsError || json.Unmarshal([]byte(res.Text), &g) != nil {
+		if err != nil || res.IsError {
+			continue
+		}
+		if json.Unmarshal([]byte(res.Text), &g) != nil {
+			NoteContract(tools, "graph_neighbors")
 			continue
 		}
 		for _, n := range g.Neighbors {
@@ -421,7 +425,11 @@ func (g *doctorGuard) fenceMap(raw json.RawMessage) (json.RawMessage, string) {
 	var page struct {
 		Frontmatter map[string]any `json:"frontmatter"`
 	}
-	if err != nil || out.IsError || json.Unmarshal([]byte(out.Text), &page) != nil {
+	if err != nil || out.IsError {
+		return nil, "the map's contract cannot be read"
+	}
+	if json.Unmarshal([]byte(out.Text), &page) != nil {
+		NoteContract(g.inner, "concept_read")
 		return nil, "the map's contract cannot be read"
 	}
 	for k, v := range page.Frontmatter { // field_values.<type>.<field>: frontmatter is flat
