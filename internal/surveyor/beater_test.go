@@ -13,6 +13,7 @@ import (
 
 	"github.com/BeppeTemp/cartographer/internal/client"
 	"github.com/BeppeTemp/cartographer/internal/componentproto"
+	"github.com/BeppeTemp/cartographer/internal/surveyor/recipe"
 	"github.com/BeppeTemp/cartographer/internal/surveyorconfig"
 )
 
@@ -428,5 +429,52 @@ func TestBeaterRefusedRunsRouteBacksOffThenResumes(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("logged %d times, want once: %v", n, logs)
+	}
+}
+
+// The sources change with the last check of a recipe: a new check posts the
+// report again, the age of an old one does not, and each post carries the
+// sources as they are then.
+func TestBeaterPostsAgainWhenAChecksGenerationChanges(t *testing.T) {
+	now := time.Now()
+	api := &stubAPI{answer: &client.HeartbeatAnswer{}}
+	b := newBeater(api, &now)
+	cfg := &Config{Checks: NewCheckLog(), ExecRecipes: []recipe.ExecConfig{{Name: "wiki-lister"}}}
+	b.Sources = func() ([]surveyorconfig.Source, uint64) {
+		gen := cfg.Checks.Generation()
+		return cfg.Sources(now), gen
+	}
+	b.Beat(context.Background(), State{Run: StateIdle})
+	if _, posts := api.counts(); posts != 1 {
+		t.Fatalf("posts = %d, want 1 (start)", posts)
+	}
+	now = now.Add(time.Hour) // an hour older, no new check
+	b.send()
+	if _, posts := api.counts(); posts != 1 {
+		t.Fatalf("posts = %d: the age of a check is no change", posts)
+	}
+	cfg.Checks.Record("wiki-lister", nil, now)
+	b.send()
+	if _, posts := api.counts(); posts != 2 {
+		t.Fatalf("posts = %d, want 2 (a check ran)", posts)
+	}
+	b.send()
+	if _, posts := api.counts(); posts != 2 {
+		t.Fatalf("posts = %d, want still 2", posts)
+	}
+	api.mu.Lock()
+	rep := api.settings.(*surveyorconfig.Report)
+	api.mu.Unlock()
+	var got string
+	for _, s := range rep.Sources {
+		if s.Name == "wiki-lister" {
+			got = s.Check.Outcome
+		}
+	}
+	if got != surveyorconfig.CheckOK {
+		t.Errorf("the second report carries %q for wiki-lister, want ok: %+v", got, rep.Sources)
+	}
+	if b.Settings.Sources != nil && len(b.Settings.Sources) != 0 {
+		t.Error("the beater wrote into the caller's report instead of a copy")
 	}
 }
