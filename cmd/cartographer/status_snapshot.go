@@ -170,6 +170,10 @@ type statusArtifact struct {
 	Path   string `json:"path,omitempty"`
 	Signed bool   `json:"signed,omitempty"`
 	Trust  string `json:"trust,omitempty"`
+	// HeldReason says why an agent in the catalogue waits for an approval when
+	// the reason is not the usual one: its frontmatter is not valid YAML, so the
+	// approval gate cannot tell what it declares. Empty otherwise.
+	HeldReason string `json:"held_reason,omitempty"`
 	// Detail says why a diverged artifact is diverged when the reason alone
 	// does not: an "unrunnable" hook names the command and what is wrong with
 	// it (D267).
@@ -477,7 +481,7 @@ func snapshotForConfig(dir string, cfg *clientconfig.Config, includeService bool
 		}
 		return s
 	}
-	s.Issues = manifestIssues(manifests)
+	s.Issues = statusIssues(manifests)
 	// The count keeps its meaning: distinct artifacts per provider, summed. An
 	// artifact in two workspaces of one provider is one artifact.
 	for _, name := range connectedProviders {
@@ -765,8 +769,54 @@ func snapshotArtifacts(artifacts []contract.Artifact, cfg *clientconfig.Config) 
 			trust = "trusted"
 		}
 		out[i] = statusArtifact{Kind: a.Kind, Name: a.Name, Source: a.Source, Signed: a.Signed, Trust: trust}
+		if trust == "needs_approval" || trust == "approval_stale" {
+			out[i].HeldReason = heldAgentReason(o)
+		}
 	}
 	return out
+}
+
+// heldAgentReason is why the approval gate holds an agent whose frontmatter it
+// cannot parse (FrontmatterDeclaresCommands fails closed), or "" for any other
+// artifact. It is derived from the files the client already pulled, so nothing
+// of it travels on the wire.
+func heldAgentReason(a contract.Artifact) string {
+	if a.Kind != "agent" {
+		return ""
+	}
+	for _, f := range a.Files {
+		if err := contract.ValidateFrontmatterYAML(f.Content); err != nil {
+			return fmt.Sprintf("its frontmatter is not valid YAML (%v), so the approval gate cannot tell what it declares", err)
+		}
+	}
+	return ""
+}
+
+// statusIssues is manifestIssues without the lines about an agent the run holds
+// for approval (heldAgentReason): that agent is in the catalogue, listed with
+// its reason, so naming it again as left out would be false. sync keeps the
+// line, which is about the content and true there.
+func statusIssues(manifests map[string]contract.Manifest) []string {
+	var prefixes []string
+	for _, m := range manifests {
+		for _, a := range m.Artifacts {
+			if a.Kind == "agent" && strings.HasPrefix(a.Source, "kb:") {
+				prefixes = append(prefixes, contract.AgentFrontmatterIssuePrefix(strings.TrimPrefix(a.Source, "kb:"), a.Name))
+			}
+		}
+	}
+	kept := make(map[string]contract.Manifest, len(manifests))
+	for k, m := range manifests {
+		var keep []contract.KBIssue
+		for _, is := range m.KBIssues {
+			if !slices.ContainsFunc(prefixes, func(p string) bool { return strings.HasPrefix(is.Text, p) }) {
+				keep = append(keep, is)
+			}
+		}
+		m.KBIssues = keep
+		kept[k] = m
+	}
+	return manifestIssues(kept)
 }
 
 // heldArtifacts are the artifacts of m that wait for an approval without being

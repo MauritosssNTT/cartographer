@@ -200,6 +200,9 @@ func renderStatus(output string, s statusSnapshot, code int) int {
 			if trust == "needs_approval" || trust == "approval_stale" {
 				approvalPending = true
 			}
+			if a.HeldReason != "" {
+				fmt.Printf("    held for approval: %s\n", escapeControl(a.HeldReason))
+			}
 			if a.Kind == "hook" {
 				printHookRegistrationHint(p.Name, a, "new hook")
 			}
@@ -209,6 +212,9 @@ func renderStatus(output string, s statusSnapshot, code int) int {
 			fmt.Printf("  ~ %s/%s [%s] trust=%s\n", escapeControl(a.Kind), escapeControl(a.Name), escapeControl(a.Source), trust)
 			if trust == "needs_approval" || trust == "approval_stale" {
 				approvalPending = true
+			}
+			if a.HeldReason != "" {
+				fmt.Printf("    held for approval: %s\n", escapeControl(a.HeldReason))
 			}
 			if a.Kind == "hook" {
 				printHookRegistrationHint(p.Name, a, "hook updated")
