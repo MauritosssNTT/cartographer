@@ -1100,6 +1100,29 @@ func validV2Outcome(e Entry) bool {
 	return e.Outcome == ""
 }
 
+// checkpointFault names the first condition a checkpoint fails, or "" when it
+// is well formed and continues the chain from previous (the last hash of the
+// checkpoint before it, "genesis" for the first). It is the whole shape check
+// of VerifyAudit, split out so the error says which condition failed instead
+// of leaving a flake to be reproduced to find out.
+func checkpointFault(cp Checkpoint, previous string) string {
+	switch {
+	case cp.Name == "":
+		return "no segment name"
+	case cp.Count <= 0:
+		return fmt.Sprintf("count %d is not positive", cp.Count)
+	case cp.PrevHash != previous:
+		return fmt.Sprintf("chain broken: prev_hash %q does not continue the previous checkpoint's last hash %q", cp.PrevHash, previous)
+	case cp.FirstHash == "":
+		return "no first hash"
+	case cp.LastHash == "":
+		return "no last hash"
+	case cp.End.Before(cp.Start):
+		return fmt.Sprintf("end %s before start %s", cp.End.Format(time.RFC3339Nano), cp.Start.Format(time.RFC3339Nano))
+	}
+	return ""
+}
+
 // VerifyOptions tunes VerifyAudit.
 type VerifyOptions struct {
 	// SignedSince, when non-zero, declares that every entry with a timestamp
@@ -1165,8 +1188,8 @@ func VerifyAudit(path, configuredArchive string, public ed25519.PublicKey, opts 
 	checkpointOnly, retained := 0, 0
 	previousCheckpoint := "genesis"
 	for _, cp := range idx.Segments {
-		if cp.Name == "" || cp.Count <= 0 || cp.PrevHash != previousCheckpoint || cp.FirstHash == "" || cp.LastHash == "" || cp.End.Before(cp.Start) {
-			return Summary{Corrupt: 1}, fmt.Errorf("audit: invalid checkpoint %q", cp.Name)
+		if fault := checkpointFault(cp, previousCheckpoint); fault != "" {
+			return Summary{Corrupt: 1}, fmt.Errorf("audit: invalid checkpoint %q: %s", cp.Name, fault)
 		}
 		segmentPath := filepath.Join(archiveDir(path, configuredArchive), cp.Name)
 		if _, statErr := os.Stat(segmentPath); statErr == nil {

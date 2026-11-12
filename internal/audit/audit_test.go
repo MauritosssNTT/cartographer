@@ -1676,3 +1676,63 @@ func TestRotationCheckpointSurvivesAClockStepBack(t *testing.T) {
 		})
 	}
 }
+
+// TestVerifyAuditNamesTheCheckpointConditionThatFailed: the verifier's error
+// keeps the `invalid checkpoint "<name>"` prefix and says which condition of
+// the shape check failed, so a flake in a gate is diagnosable from its log
+// alone (#1878).
+func TestVerifyAuditNamesTheCheckpointConditionThatFailed(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Checkpoint)
+		want   string
+	}{
+		{"no name", func(cp *Checkpoint) { cp.Name = "" }, "no segment name"},
+		{"count", func(cp *Checkpoint) { cp.Count = 0 }, "count 0 is not positive"},
+		{"chain", func(cp *Checkpoint) { cp.PrevHash = "other" }, "chain broken"},
+		{"first hash", func(cp *Checkpoint) { cp.FirstHash = "" }, "no first hash"},
+		{"last hash", func(cp *Checkpoint) { cp.LastHash = "" }, "no last hash"},
+		{"clock", func(cp *Checkpoint) { cp.End = cp.Start.Add(-time.Second) }, "end "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "audit.jsonl")
+			archive := filepath.Join(dir, "archive")
+			l, err := OpenWithOptions(path, Options{MaxBytes: 1, ArchiveDir: archive})
+			if err != nil {
+				t.Fatal(err)
+			}
+			appendCall(t, l, "one")
+			appendCall(t, l, "two") // rotates the first call's segment
+			if err := l.Close(); err != nil {
+				t.Fatal(err)
+			}
+			cpPath := checkpointPath(path, archive)
+			idx, err := loadCheckpointIndex(cpPath)
+			if err != nil || len(idx.Segments) == 0 {
+				t.Fatalf("no rotated segment: %v", err)
+			}
+			name := idx.Segments[0].Name
+			tc.mutate(&idx.Segments[0])
+			b, err := json.Marshal(idx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(cpPath, b, 0o640); err != nil {
+				t.Fatal(err)
+			}
+			_, err = VerifyAudit(path, archive, nil, VerifyOptions{})
+			if err == nil {
+				t.Fatal("a broken checkpoint verified")
+			}
+			prefix := fmt.Sprintf("audit: invalid checkpoint %q: ", name)
+			if tc.name == "no name" {
+				prefix = `audit: invalid checkpoint "": `
+			}
+			if !strings.HasPrefix(err.Error(), prefix) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want prefix %q and %q", err, prefix, tc.want)
+			}
+		})
+	}
+}
