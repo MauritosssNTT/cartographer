@@ -33,6 +33,18 @@ type Scenario struct {
 	// HTTP are the recorded exchanges of a Starlark recipe's http.request.
 	HTTP  []Recording `yaml:"http"`
 	Steps []Step      `yaml:"steps"`
+	// Calls are the tool calls of a connector's scenario.
+	Calls []Call `yaml:"calls"`
+}
+
+// Call is one tool call of a connector, made through the connector set a
+// Surveyor opens, so the allowlist and the result cap apply.
+type Call struct {
+	Tool string         `yaml:"tool"`
+	Args map[string]any `yaml:"args"`
+	// ExpectError says the call must be refused or answer an error result.
+	ExpectError        bool   `yaml:"expect_error"`
+	ExpectTextContains string `yaml:"expect_text_contains"`
 }
 
 // Source is the Source the recipe is asked about.
@@ -122,6 +134,9 @@ func ReadFile(dir, name string) (*Scenario, error) {
 		}
 		r.Body = string(b)
 	}
+	if len(sc.Steps) == 0 && len(sc.Calls) == 0 {
+		return nil, fmt.Errorf("%s.yaml: needs steps (a recipe) or calls (a connector)", name)
+	}
 	hasList := false
 	for i, s := range sc.Steps {
 		if !stepVerbs[s.Verb] {
@@ -129,7 +144,7 @@ func ReadFile(dir, name string) (*Scenario, error) {
 		}
 		hasList = hasList || s.Verb == "list"
 	}
-	if !hasList {
+	if len(sc.Steps) > 0 && !hasList {
 		return nil, fmt.Errorf("%s.yaml: steps needs at least one list step", name)
 	}
 	return &sc, nil

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BeppeTemp/cartographer/internal/surveyor/recipe"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // The test binary re-executed as an exec recipe: no interpreter, so the tests
@@ -23,6 +24,12 @@ import (
 func TestMain(m *testing.M) {
 	if len(os.Args) > 2 && os.Args[1] == "--helper" {
 		helper(os.Args[2], os.Args[3:])
+	}
+	if os.Getenv("CONNECTOR_TEST_HELPER") == "1" { // the same binary as a stdio MCP server
+		if err := mcpHelper().Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
@@ -112,7 +119,7 @@ func TestAConformingRecipePassesEveryCheck(t *testing.T) {
 			t.Errorf("%s: %s, want skip", c, got)
 		}
 	}
-	if len(res) != len(Checks)+3 {
+	if len(res) != len(Checks)+2 { // the steps and every check but the connector one
 		t.Errorf("%d results, want one per check and per step", len(res))
 	}
 }

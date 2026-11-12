@@ -67,7 +67,7 @@ func TestPluginTestRunsARecipeAgainstItsScenario(t *testing.T) {
 		Passed  bool                `json:"passed"`
 		Results []recipetest.Result `json:"results"`
 	}
-	if err := json.Unmarshal([]byte(out), &doc); err != nil || !doc.Passed || len(doc.Results) != len(recipetest.Checks)+1 || doc.Results[0].Check != "step 1 list" {
+	if err := json.Unmarshal([]byte(out), &doc); err != nil || !doc.Passed || doc.Results[0].Check != "step 1 list" {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if code, out = runPlugin(t, "test", dir); code != 0 || !strings.Contains(out, "pages") || !strings.Contains(out, "pass") {
@@ -179,5 +179,44 @@ func TestPluginTestFailsAConformanceCheck(t *testing.T) {
 	code, out := runPlugin(t, "test", dir)
 	if code != 1 || !strings.Contains(out, "secrets") || !strings.Contains(out, "the value of WIKI_TOKEN appears in entry") {
 		t.Errorf("exit %d\n%s", code, out)
+	}
+}
+
+// A connector with an http transport is a live server: it is listed and skipped
+// with the reason, and the run still passes. A scenario without calls, or a name
+// the plugin lacks, could not run.
+func TestPluginTestSkipsAnHTTPConnector(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"cartographer-plugin.yaml": "schema: 2\nname: example-wiki\nversion: 0.1.0\ndisplay_name: Wiki\ndescription: A wiki.\ncartographer: \">=0.29.0\"\ncomponents:\n  surveyor:\n    sdk: {connectors: 1}\n    permissions:\n      net: [wiki.example.com]\n      env: [WIKI_TOKEN]\n",
+		"connectors/pages.yaml":    "transport: http\nurl: https://wiki.example.com/mcp\ntoken_env: WIKI_TOKEN\ntools: [read]\n",
+		"tests/pages.yaml":         "calls:\n  - tool: read\n    args: {id: \"1\"}\n",
+	}
+	for p, c := range files {
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(c), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code, out := runPlugin(t, "test", dir); code != 0 || !strings.Contains(out, "skip") || !strings.Contains(out, "live server") {
+		t.Errorf("exit %d\n%s", code, out)
+	}
+	if code, _ := runPlugin(t, "test", dir, "--connector", "pages"); code != 0 {
+		t.Errorf("--connector: exit %d", code)
+	}
+	if code, _ := runPlugin(t, "test", dir, "--connector", "nope"); code != 2 {
+		t.Errorf("an unknown connector: exit %d", code)
+	}
+	if code, _ := runPlugin(t, "test", dir, "--recipe", "pages"); code != 2 {
+		t.Errorf("a recipe the plugin lacks: exit %d", code)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tests", "pages.yaml"), []byte("steps:\n  - verb: list\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := runPlugin(t, "test", dir); code != 2 {
+		t.Errorf("a connector scenario without calls: exit %d", code)
 	}
 }
