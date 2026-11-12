@@ -82,11 +82,17 @@
           "description": "Hook protocol version; a response with another version is a failure."
         },
         "user": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Absent or empty: no opinion, the header identity stays."
         },
         "groups": {
-          "type": "array",
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "type": "string"
           }
@@ -97,7 +103,7 @@
         },
         "reason": {
           "type": "string",
-          "description": "Shown to the caller in the coded denial, cut to 200 printable characters."
+          "description": "Not shown: a deny is a 403 identity denied."
         }
       }
     }

@@ -42,14 +42,14 @@
           "items": {
             "type": "object",
             "required": [
-              "id",
               "hash",
               "prev_hash",
               "timestamp"
             ],
             "properties": {
               "id": {
-                "type": "string"
+                "type": "string",
+                "description": "Unique, for deduplication; absent on an entry written before the versioned events."
               },
               "hash": {
                 "type": "string"
@@ -71,7 +71,8 @@
           "type": "string"
         },
         "gap": {
-          "type": "boolean"
+          "type": "boolean",
+          "description": "Entries after the previous cursor were removed by retention, or the cursor is not in this log."
         }
       }
     },

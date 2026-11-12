@@ -35,7 +35,8 @@ the request's is a failure.
 optional `reason`) or anything else, which is **no opinion**: `allow` is no opinion too, so a hook
 can only turn a core allow into a deny. The core decides first: a hook is never asked about a
 request the core refused. A `reason` is cut to 200 printable characters and only ever shown to the
-caller inside the coded denial; no hook output reaches a commit, a file path or a shell.
+caller inside the coded denial (and, for a hook in `dry_run`, in the server log line that records what it would
+have denied); no hook output reaches a commit, a file path or a shell.
 
 The JSON Schema of each point's request and response is published in
 `docs/schemas/hooks/` (one file per point, such as [`write_veto.json`](schemas/hooks/write_veto.json), with
@@ -55,12 +56,14 @@ entry (`failure_policy`, no default):
 | `fail_open` | the request continues, the failure is logged | logged only |
 
 After 5 consecutive failures a hook's circuit opens for 30 s: the policy applies without calling it,
-then one probe call decides whether it closes. A dead hook costs one timeout, not one per request. A
+then one probe call decides whether it closes. A dead hook costs five timeouts, then one probe every 30 s, not one
+timeout per request. A
 call the caller cancelled is not a failure of the hook (the breaker is untouched), but it has no
 answer, so the policy still decides. `mode: dry_run` calls the hook and records what it would have
 decided (`dry_run_deny`) without ever acting on its answer. A `secret_resolver` must be
 `fail_closed` and refuses `dry_run`; an `audit_sink` ignores `mode`. Failures and circuit
-transitions are logged with the hook name, never a body, a URL query or a credential.
+transitions are logged with the hook name, never a body, a URL query or a credential (a dry-run deny logs the
+hook's reason).
 
 ## The four points
 
@@ -83,7 +86,7 @@ the content-aware check is the core's write gate. A `/mcp/routed` write asks the
 
 | Response field | Meaning |
 |---|---|
-| `decision`, `reason` | `deny` refuses with `forbidden: denied_by_hook: <reason>`; anything else is no opinion |
+| `decision`, `reason` | `deny` refuses with `forbidden: denied_by_hook: a hook the operator configured refused this write: <reason>`; anything else is no opinion |
 
 A failure under `fail_closed` refuses with `hook_unavailable`. The audit pair of the call carries
 `hook` and `hook_verdict` (`deny`, `dry_run_deny`, `error`).
@@ -103,17 +106,19 @@ A failure under `fail_closed` refuses with `hook_unavailable`. The audit pair of
 Receives the audit chain as it is written, in chain order and **at least once**, from a cursor: the
 hash of the last entry it acknowledged, persisted beside the log, so a restart resumes where it was.
 Each event is the entry as the log stores it, `hash` and `sig` included, so the receiver can verify
-the chain; its `id` is unique, for deduplication. Delivery runs in its own goroutine and never slows
+the chain; its `id` is unique, for deduplication (an entry written by a release before the versioned events,
+`version` absent, has no `id`: its `hash` identifies it). Delivery runs in its own goroutine and never slows
 an append; a failure retries with a backoff from 1 s to 60 s, and nothing is lost (the local chain
-is the source of truth). `gap: true` says that entries after the cursor were deleted by retention:
-delivery resumes at the oldest retained entry. The cursor is the chain hash, not a `changes_since`
+is the source of truth). `gap: true` says that entries after the cursor were deleted by retention, or that
+the cursor is not a hash of this log (a stale or foreign cursor file): delivery resumes at the oldest retained
+entry. The cursor is the chain hash, not a `changes_since`
 position, because the chain also records reads, denials and refused attempts (`D-new-audit-sink`).
 
 | Request field | Meaning |
 |---|---|
 | `events` | at most `batch_size` (default 100) audit entries |
 | `first_hash`, `last_hash` | the hashes of the first and the last entry |
-| `gap` | entries after the previous cursor were removed by retention |
+| `gap` | entries after the previous cursor were removed by retention, or the cursor is not in this log |
 
 | Response field | Meaning |
 |---|---|
@@ -127,7 +132,7 @@ every call. See [transport-auth](transport-auth.md) §The audit sink.
 
 <!-- hook-example: audit_sink request -->
 ```json
-{"version":1,"hook":"acme/siem","request_id":"0123456789abcdef0123456789abcdef","time":"2026-01-01T10:00:00Z","events":[{"version":2,"id":"5f2b","timestamp":"2026-01-01T09:59:59Z","phase":"attempt","request_id":"9a1c","principal_id":"user","transport":"http","kb":"work-kb","tool":"concept_read","read_only":true,"resources":{"id":"runbooks/restart"},"prev_hash":"genesis","hash":"3b7e","principal_kind":"human"}],"first_hash":"3b7e","last_hash":"3b7e","gap":false}
+{"version":1,"hook":"acme/siem","request_id":"0123456789abcdef0123456789abcdef","time":"2026-01-01T10:00:00Z","events":[{"version":2,"id":"5f2b","timestamp":"2026-01-01T09:59:59Z","phase":"attempt","request_id":"9a1c","principal_id":"user","transport":"http","kb":"work-kb","tool":"concept_read","read_only":true,"resources":{"id":"runbooks/restart"},"outcome":"","prev_hash":"genesis","hash":"3b7e","principal_kind":"human"}],"first_hash":"3b7e","last_hash":"3b7e","gap":false}
 ```
 
 <!-- hook-example: audit_sink response -->
@@ -182,7 +187,7 @@ the hook can never exceed it. Cached for `cache_ttl` (default 60 s). See
 | Response field | Meaning |
 |---|---|
 | `user`, `groups` | the identity that replaces the header one; no `user` is no opinion |
-| `decision` | `deny` is a `403` |
+| `decision` | `deny` is a `403` (`identity denied`; a `reason` is not shown) |
 
 Under `fail_closed` a failure is a `503` with `Retry-After: 30`; under `fail_open` the header
 identity stays.
