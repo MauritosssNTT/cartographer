@@ -1520,19 +1520,46 @@ const (
 )
 
 // gitStatePath is where git keeps the per-worktree state file or directory name
-// for the repository at dir. In a linked worktree `.git` is a file, so the path
-// comes from git itself (rev-parse --git-path); when git cannot say (dir is not a
-// repository) it falls back to <dir>/.git/<name>.
+// for the repository rooted at dir, without starting a git process and without
+// git's upward discovery: a folder with no `.git` of its own, or a bogus one,
+// must not be judged by the repository enclosing it. `.git` a directory: the state
+// is inside it. `.git` a file (a linked worktree or a submodule): its `gitdir:`
+// line names the git dir that holds the state. Anything else yields a path that
+// does not exist, i.e. no state.
 func gitStatePath(dir, name string) string {
-	if out, err := runGit(dir, "rev-parse", "--git-path", name); err == nil {
-		if p := strings.TrimSpace(out); p != "" {
-			if !filepath.IsAbs(p) {
-				p = filepath.Join(dir, p)
-			}
-			return p
+	dotGit := filepath.Join(dir, ".git")
+	if fi, err := os.Stat(dotGit); err == nil && fi.Mode().IsRegular() {
+		if gd := gitFileDir(dotGit); gd != "" {
+			return filepath.Join(gd, name)
 		}
 	}
-	return filepath.Join(dir, ".git", name)
+	return filepath.Join(dotGit, name)
+}
+
+// gitFileDir is the directory the `gitdir: <path>` line of the gitfile at path
+// names (a relative path is relative to the gitfile's folder); "" when the file
+// holds no such line.
+func gitFileDir(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		v, ok := strings.CutPrefix(strings.TrimSpace(line), "gitdir:")
+		if !ok {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return ""
+		}
+		v = filepath.FromSlash(v)
+		if !filepath.IsAbs(v) {
+			v = filepath.Join(filepath.Dir(path), v)
+		}
+		return v
+	}
+	return ""
 }
 
 // RebaseInProgress reports whether dir has a rebase state directory and what kind

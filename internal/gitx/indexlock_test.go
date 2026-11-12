@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -380,5 +381,84 @@ func TestRebaseInProgress_LinkedWorktree(t *testing.T) {
 	dir := RebaseStateDir(wt)
 	if dir == "" || !strings.HasPrefix(filepath.Base(dir), "rebase-") {
 		t.Errorf("RebaseStateDir = %q", dir)
+	}
+}
+
+// A folder with no `.git` of its own, or a bogus empty one, inside a repository
+// that is mid-rebase is not itself in a rebase: git's upward discovery must not
+// leak the enclosing repository's state into it.
+func TestRebaseInProgress_IgnoresEnclosingRepo(t *testing.T) {
+	outer := remoteAhead(t)
+	stopOnConflict(t, outer, "outer")
+	bogus := filepath.Join(outer, "kb")
+	if err := os.MkdirAll(filepath.Join(bogus, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(outer, "plain")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{bogus, plain} {
+		if kind, ok := RebaseInProgress(d); ok {
+			t.Errorf("%s reports the enclosing repository's rebase (%q)", d, kind)
+		}
+		if got := RebaseStateDir(d); got != "" {
+			t.Errorf("%s: RebaseStateDir = %q", d, got)
+		}
+	}
+	if _, ok := RebaseInProgress(outer); !ok {
+		t.Error("the repository itself lost its rebase")
+	}
+}
+
+// Looking for a rebase in an ordinary clone starts no git process: it runs on
+// every SyncIn and SyncOut.
+func TestRebaseInProgress_SpawnsNoGit(t *testing.T) {
+	dir := repoWithCommit(t)
+	before := RunCount()
+	if _, ok := RebaseInProgress(dir); ok {
+		t.Fatal("a fresh clone reports a rebase")
+	}
+	_ = RebaseStateDir(dir)
+	if n := RunCount() - before; n != 0 {
+		t.Errorf("RebaseInProgress/RebaseStateDir started %d git processes", n)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX quoting")
+	}
+	for in, want := range map[string]string{
+		"/tmp/kb":    "/tmp/kb",
+		"/tmp/my kb": "'/tmp/my kb'",
+		"/tmp/it's":  `'/tmp/it'\''s'`,
+		"":           "''",
+	} {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The command the hint prints must paste as one command when the path has a space.
+func TestAbortRebaseIfStarted_QuotesThePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX quoting")
+	}
+	main := remoteAhead(t)
+	wt := filepath.Join(t.TempDir(), "my wt")
+	ident := []string{"GIT_AUTHOR_NAME=User", "GIT_AUTHOR_EMAIL=user@example.com", "GIT_COMMITTER_NAME=User", "GIT_COMMITTER_EMAIL=user@example.com"}
+	if out, err := runGitEnv(main, ident, "worktree", "add", "-q", "-b", "wt-branch", wt, "main"); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	stopOnConflict(t, wt, "wt")
+	lock := indexLockPath(wt, nil)
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hint := abortRebaseIfStarted(wt)
+	if want := "git -C '" + wt + "' rebase --abort"; !strings.Contains(hint, want) {
+		t.Errorf("hint %q lacks %q", hint, want)
 	}
 }

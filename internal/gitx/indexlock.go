@@ -27,6 +27,21 @@ func indexLockHint(dir, out string) string {
 	return fmt.Sprintf("\ncartographer: %s is a lock left by a git that did not finish: if no git process runs in %s, remove that file", m[1], dir)
 }
 
+// shellQuote makes s one word of a command the operator pastes: untouched when it
+// holds only safe characters, otherwise single-quoted (POSIX) or double-quoted
+// (Windows, where single quotes are not quoting).
+func shellQuote(s string) string {
+	if s != "" && strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/._-:+=@%\\", r))
+	}) < 0 {
+		return s
+	}
+	if runtime.GOOS == "windows" {
+		return `"` + s + `"`
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // abortRebaseIfStarted aborts the rebase a refused pull or rebase may have begun,
 // best effort. When git could not take the index lock it usually stopped before
 // creating any rebase state ("could not detach HEAD"): then there is nothing to
@@ -43,7 +58,7 @@ func abortRebaseIfStarted(dir string) string {
 	if _, ok := RebaseInProgress(dir); !ok {
 		return ""
 	}
-	return fmt.Sprintf("\ncartographer: a rebase is also left in progress in %s: after removing the lock, run `git -C %s rebase --abort`", dir, dir)
+	return fmt.Sprintf("\ncartographer: a rebase is also left in progress in %s: after removing the lock, run `git -C %s rebase --abort`", dir, shellQuote(dir))
 }
 
 // RemoveStaleIndexLock removes the index.lock a crash, a power loss or a kill left
