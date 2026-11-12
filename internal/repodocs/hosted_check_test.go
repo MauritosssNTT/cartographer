@@ -23,11 +23,12 @@ func stubBin(t *testing.T, scripts map[string]string) string {
 }
 
 // runHostedCheck runs scripts/hosted-check.sh with PATH reduced to path and returns the exit code.
-// The Windows list is the empty one unless env sets CHECK_WIN_PKGS: the toy repositories here have no
-// upstream/main for the script to compute it from (TestHostedCheckComputesWindowsPackages does).
+// The Windows list is the empty one unless env sets HOSTED_CHECK_TEST_WIN_PKGS (the script's test seam):
+// the toy repositories here have no upstream/main for the script to compute it from
+// (TestHostedCheckComputesWindowsPackages does).
 func runHostedCheck(t *testing.T, dir, path string, env []string, args ...string) (int, string) {
 	t.Helper()
-	return runHostedCheckScript(t, filepath.Join(repoRoot(t), "scripts/hosted-check.sh"), dir, path, append([]string{"CHECK_WIN_PKGS="}, env...), args...)
+	return runHostedCheckScript(t, filepath.Join(repoRoot(t), "scripts/hosted-check.sh"), dir, path, append([]string{"HOSTED_CHECK_TEST_WIN_PKGS="}, env...), args...)
 }
 
 // runHostedCheckScript runs the script at the given path (absolute or relative to dir), env as is.
@@ -62,7 +63,7 @@ func TestHostedCheckRejects(t *testing.T) {
 		{"check-run", "CHECK_PKGS=$(x)"},
 		{"check-run", "CHECK_PKGS=./a`x`"},
 		{"check-run", "CHECK_FOO=1"},
-		{"check-run", "CHECK_PKGS=./a", "CHECK_WIN_PKGS=./a"}, // the script computes it: only the environment overrides
+		{"check-run", "CHECK_PKGS=./a", "CHECK_WIN_PKGS=./a"}, // the script computes it: no argument carries it
 		{"check-run", "CHECK_PKGS=./a\nrm -rf x"},
 		{"check-run", "CHECK_PKGS=./a\r./b"},
 		{"check-run", "CHECK_PKGS=-exec=/bin/x"},
@@ -518,7 +519,7 @@ func readFileAbs(t *testing.T, p string) string {
 }
 
 // The Windows leg of the train gate (#1935): the script takes the packages from the environment as
-// CHECK_WIN_PKGS (the seam), the script dispatches them as win_pkgs and, when the
+// HOSTED_CHECK_TEST_WIN_PKGS (the seam), dispatches them as win_pkgs, says what the leg tests and, when the
 // run is red, names the red leg(s) with each one's log excerpt, from the one poll that gave the verdict.
 func TestHostedCheckWindowsLeg(t *testing.T) {
 	needBash(t)
@@ -565,7 +566,7 @@ func TestHostedCheckWindowsLeg(t *testing.T) {
 			run(repo, "remote", "add", "origin", bare)
 			stubs := stubBin(t, map[string]string{"gh": ghStub})
 			path := stubs + string(os.PathListSeparator) + filepath.Dir(git) + string(os.PathListSeparator) + "/usr/bin" + string(os.PathListSeparator) + "/bin"
-			env := append([]string{"CHECK_WIN_PKGS=./a ./b", "GH_STATE=" + state, "GH_CONCL=" + c.concl, "GH_JOBS=" + c.jobs, "GH_LOG=" + log,
+			env := append([]string{"HOSTED_CHECK_TEST_WIN_PKGS=./a ./b", "GH_STATE=" + state, "GH_CONCL=" + c.concl, "GH_JOBS=" + c.jobs, "GH_LOG=" + log,
 				"HOSTED_CHECK_POLL=0", "HOSTED_CHECK_DISPATCH_POLL=0"}, gitEnv...)
 			code, out := runHostedCheck(t, repo, path, env, "check-run", "CHECK_PKGS=./a")
 			if code != c.code {
@@ -581,6 +582,12 @@ func TestHostedCheckWindowsLeg(t *testing.T) {
 					t.Errorf("output has %q:\n%s", w, out)
 				}
 			}
+			// A real run (not a dry one) says what the Windows leg tests, and that the seam was used.
+			for _, w := range []string{"hosted-check: Windows leg: 2 package(s): ./a ./b", "HOSTED_CHECK_TEST_WIN_PKGS is set"} {
+				if !strings.Contains(out, w) {
+					t.Errorf("output lacks %q:\n%s", w, out)
+				}
+			}
 			if got := readFileAbs(t, filepath.Join(state, "dispatch")); !strings.Contains(got, "-f pkgs=./a -f win_pkgs=./a ./b -f e2e=false") {
 				t.Errorf("the dispatch does not carry both lists: %q", got)
 			}
@@ -594,9 +601,9 @@ func TestHostedCheckWindowsListIsValidated(t *testing.T) {
 	needBash(t)
 	stubs := stubBin(t, map[string]string{"git": "exit 99", "gh": "exit 99"})
 	for _, win := range []string{"./a;rm", "$(x)", "./a`x`", "./a\nrm -rf x", "-exec=/bin/x", "./a -exec=/bin/x"} {
-		code, out := runHostedCheck(t, repoRoot(t), stubs, []string{"CHECK_WIN_PKGS=" + win}, "check-run", "CHECK_PKGS=./a")
+		code, out := runHostedCheck(t, repoRoot(t), stubs, []string{"HOSTED_CHECK_TEST_WIN_PKGS=" + win}, "check-run", "CHECK_PKGS=./a")
 		if code != 2 || !strings.Contains(out, "bad package list") {
-			t.Errorf("CHECK_WIN_PKGS=%q: exit %d, want 2 with %q\n%s", win, code, "bad package list", out)
+			t.Errorf("HOSTED_CHECK_TEST_WIN_PKGS=%q: exit %d, want 2 with %q\n%s", win, code, "bad package list", out)
 		}
 	}
 	git, err := exec.LookPath("git")
@@ -620,7 +627,7 @@ func TestHostedCheckWindowsListIsValidated(t *testing.T) {
 		}
 	}
 	path := filepath.Dir(git) + string(os.PathListSeparator) + "/usr/bin" + string(os.PathListSeparator) + "/bin"
-	code, out := runHostedCheck(t, repo, path, append([]string{"HOSTED_CHECK_DRY=1", "CHECK_WIN_PKGS=./a ./b"}, gitEnv...), "check-run", "CHECK_PKGS=./a")
+	code, out := runHostedCheck(t, repo, path, append([]string{"HOSTED_CHECK_DRY=1", "HOSTED_CHECK_TEST_WIN_PKGS=./a ./b"}, gitEnv...), "check-run", "CHECK_PKGS=./a")
 	if code != 0 || !strings.Contains(out, "win_pkgs='./a ./b'") {
 		t.Errorf("dry run: exit %d, want 0 naming the Windows packages:\n%s", code, out)
 	}
@@ -699,13 +706,14 @@ esac`
 		wantExit         int
 		want, notWant    []string
 	}{
-		{"computed from the changed paths", "", `./a\n./b\n`, nil, 0, []string{"win_pkgs='./a ./b'"}, nil},
-		{"nothing to test on Windows", "", "", nil, 0, []string{"win_pkgs=''"}, nil},
+		{"computed from the changed paths", "", `./a\n./b\n`, nil, 0, []string{"win_pkgs='./a ./b'", "Windows leg: 2 package(s): ./a ./b"}, []string{"test seam"}},
+		{"nothing to test on Windows", "", "", nil, 0, []string{"win_pkgs=''", "no Windows leg: no Go code changed"}, nil},
+		{"a stray CHECK_WIN_PKGS in the environment is ignored", "", `./a\n./b\n`, []string{"CHECK_WIN_PKGS="}, 0, []string{"win_pkgs='./a ./b'"}, []string{"test seam"}},
 		{"the changed paths cannot be computed", "changed", `./a\n`, nil, 1, []string{"cannot compute the changed paths", "stub: no merge-base"}, []string{"would push"}},
 		{"the packages cannot be computed", "code", `./a\n`, nil, 1, []string{"cannot compute the Windows packages", "stub: go list failed"}, []string{"would push"}},
 		{"a computed flag-like word is refused", "", `./a\n-exec=/bin/x\n`, nil, 2, []string{"bad package list"}, []string{"would push"}},
-		{"the environment replaces the computation", "changed", "", []string{"CHECK_WIN_PKGS=./z"}, 0, []string{"win_pkgs='./z'"}, []string{"stub:"}},
-		{"an empty environment list means no Windows leg", "changed", "", []string{"CHECK_WIN_PKGS="}, 0, []string{"win_pkgs=''"}, []string{"stub:"}},
+		{"the test seam replaces the computation and says so", "changed", "", []string{"HOSTED_CHECK_TEST_WIN_PKGS=./z"}, 0, []string{"win_pkgs='./z'", "HOSTED_CHECK_TEST_WIN_PKGS is set", "Windows leg: 1 package(s): ./z"}, []string{"stub:"}},
+		{"an empty test seam means no Windows leg", "changed", "", []string{"HOSTED_CHECK_TEST_WIN_PKGS="}, 0, []string{"win_pkgs=''", "HOSTED_CHECK_TEST_WIN_PKGS is set", "no Windows leg"}, []string{"stub:"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -752,6 +760,95 @@ esac`
 			if c.fail == "" && len(c.env) == 0 {
 				if got := readFileAbs(t, filepath.Join(state, "stdin")); got != "a.go\nb.md\n" {
 					t.Errorf("--code did not get the changed paths of --changed on stdin: %q", got)
+				}
+			}
+		})
+	}
+}
+
+// The link between the two real scripts, unstubbed: hosted-check.sh feeds the real affected-pkgs.sh
+// (`--changed`, then `--code`) in a toy module with an `origin/main` (a bare remote), and the dry run
+// prints the Windows list. A changed Go file gives its package and the packages whose test binary
+// depends on it, plus the platform guard; a changed markdown file gives none (the readers of
+// repository files are not the gate's Windows leg).
+func TestHostedCheckRealAffectedPkgsFeedsTheWindowsList(t *testing.T) {
+	needBash(t)
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go not on PATH")
+	}
+	gitEnv := []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_AUTHOR_NAME=u", "GIT_AUTHOR_EMAIL=u@example.com", "GIT_COMMITTER_NAME=u", "GIT_COMMITTER_EMAIL=u@example.com"}
+	root := repoRoot(t)
+	files := map[string]string{
+		"go.mod":                      "module example.com/toy\n\ngo 1.20\n",
+		"internal/a/a.go":             "package a\n\nfunc A() int { return 1 }\n",
+		"internal/b/b.go":             "package b\n\nimport \"example.com/toy/internal/a\"\n\nfunc B() int { return a.A() }\n",
+		"internal/b/b_test.go":        "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) { _ = B() }\n",
+		"internal/c/c.go":             "package c\n\nfunc C() int { return 3 }\n",
+		"README.md":                   "toy\n",
+		"scripts/hosted-check.sh":     readFile(t, root, "scripts/hosted-check.sh"),
+		"scripts/affected-pkgs.sh":    readFile(t, root, "scripts/affected-pkgs.sh"),
+		"scripts/upstream-repo.sh":    "#!/bin/sh\necho example/toy\n",
+		"internal/procattr/p.go":      "package procattr\n",
+		"internal/procattr/p_test.go": "package procattr\n\nimport \"testing\"\n\nfunc TestP(t *testing.T) {}\n",
+	}
+	cases := []struct {
+		name, file, body string
+		want, notWant    []string
+	}{
+		{"a Go file: its package, its dependents and the guard", "internal/a/a.go", "package a\n\nfunc A() int { return 2 }\n",
+			[]string{"win_pkgs='./internal/a ./internal/b ./internal/procattr'", "Windows leg: 3 package(s)"}, []string{"./internal/c", "./internal/repodocs"}},
+		{"a markdown file: no Windows package", "README.md", "toy, changed\n",
+			[]string{"win_pkgs=''", "no Windows leg: no Go code changed"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			bare, repo := t.TempDir(), t.TempDir()
+			run := func(dir string, args ...string) {
+				cmd := exec.Command(git, args...)
+				cmd.Dir = dir
+				cmd.Env = append(os.Environ(), gitEnv...)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+			}
+			for name, body := range files {
+				p := filepath.Join(repo, name)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			run(bare, "init", "-q", "--bare")
+			run(repo, "init", "-q", "-b", "main")
+			run(repo, "add", ".")
+			run(repo, "commit", "-q", "-m", "init")
+			run(repo, "remote", "add", "origin", bare)
+			run(repo, "push", "-q", "origin", "main") // origin/main: the merge-base --changed computes
+			if err := os.WriteFile(filepath.Join(repo, c.file), []byte(c.body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Dir(git) + string(os.PathListSeparator) + filepath.Dir(goBin) + string(os.PathListSeparator) + "/usr/bin" + string(os.PathListSeparator) + "/bin"
+			env := append([]string{"HOSTED_CHECK_DRY=1", "GOTOOLCHAIN=local", "GOPROXY=off", "GOFLAGS=", "GOWORK=off"}, gitEnv...)
+			code, out := runHostedCheckScript(t, "scripts/hosted-check.sh", repo, path, env, "check-run", "CHECK_PKGS=./internal/a")
+			if code != 0 {
+				t.Fatalf("exit %d, want 0:\n%s", code, out)
+			}
+			for _, w := range c.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("output lacks %q:\n%s", w, out)
+				}
+			}
+			for _, w := range c.notWant {
+				if strings.Contains(out, w) {
+					t.Errorf("output has %q:\n%s", w, out)
 				}
 			}
 		})

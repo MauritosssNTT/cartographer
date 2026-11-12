@@ -24,8 +24,10 @@
 # red check (D1704). The dispatch needs hosted-check.yml on the default branch: before the first
 # landing it fails with 75.
 #
-#   CHECK_WIN_PKGS=<list>         test seam: a list in the environment (empty: no Windows leg)
-#                                 replaces the computation, which needs the checkout's upstream/main
+#   HOSTED_CHECK_TEST_WIN_PKGS=<list>
+#                                 TEST SEAM, never for a real run: a list in the environment (empty:
+#                                 no Windows leg) replaces the computation, which needs the checkout's
+#                                 upstream/main; a note on stderr says when it is used
 #   HOSTED_CHECK_DRY=1            build the commit and print the branch, push nothing
 #   HOSTED_CHECK_POLL=15          seconds before the first poll of the run; doubles after each poll
 #   HOSTED_CHECK_POLL_MAX=60      ceiling of that back-off (a run costs ~15 calls, not ~720 an hour:
@@ -64,9 +66,11 @@ check_list() {
   done
 }
 check_list "$pkgs"
-# The test seam: set (even empty) it replaces the computation of step 3.
-winpkgs=${CHECK_WIN_PKGS-} win_given=${CHECK_WIN_PKGS+1}
+# The test seam: set (even empty) it replaces the computation of step 3. Its name is not one a
+# shell or a CI job would export by accident, and a run that uses it says so.
+winpkgs=${HOSTED_CHECK_TEST_WIN_PKGS-} win_given=${HOSTED_CHECK_TEST_WIN_PKGS+1}
 check_list "$winpkgs"
+[ -z "$win_given" ] || note "HOSTED_CHECK_TEST_WIN_PKGS is set: the Windows packages are NOT computed (test seam)"
 
 dry=${HOSTED_CHECK_DRY:-}
 poll=${HOSTED_CHECK_POLL:-15}
@@ -130,6 +134,10 @@ if [ -z "$win_given" ]; then
   winpkgs=${winpkgs//$'\n'/ }
   check_list "$winpkgs"
 fi
+# Every run says what the Windows leg will test: a skipped leg is not a silent one.
+nwin=0
+for _ in $winpkgs; do nwin=$((nwin + 1)); done
+if [ "$nwin" = 0 ]; then note "no Windows leg: no Go code changed"; else note "Windows leg: $nwin package(s): $winpkgs"; fi
 
 tree=$(GIT_INDEX_FILE=$tmp git write-tree)
 if [ "$tree" = "$(git rev-parse 'HEAD^{tree}')" ]; then
