@@ -28,13 +28,19 @@ var permanentPushRules = []struct {
 		[]string{"write access", "denied to", "key is read-only", "read-only deploy key"}, false},
 	{"the remote's push rules declined the push and a retry will not change that",
 		[]string{"hook declined"}, false},
+	// A credential the remote rejected (or that git had none to offer) does not
+	// heal between retries. HTTP 401 only: a bare 403 can be a rate limit.
+	{"the credentials were rejected: check the token or credential helper for this forge",
+		[]string{"authentication failed", "could not read username", "returned error: 401"}, false},
 }
 
 // PermanentPushRejection reports whether the output of a failed push is a
 // refusal that retrying only repeats, and the one-line remedy quoting the
 // remote's own line: a credential without write access ("Permission to X
 // denied", "write access", a read-only deploy key; a bare HTTP 403 is not enough,
-// GitHub's secondary rate limit is one and heals), a repository rule or required
+// GitHub's secondary rate limit is one and heals), a credential the remote
+// rejected or that git had none of ("Authentication failed", "could not read
+// Username", HTTP 401), a repository rule or required
 // signature (GitHub "GH013"), a file over the size limit ("GH001"), a server-side
 // hook that declined. Only policy wording is permanent: a "[remote rejected]" for
 // a lock, a ref update, an internal error or an unpacker error is a race or a
