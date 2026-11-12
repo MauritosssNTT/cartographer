@@ -96,15 +96,17 @@ func TestPrincipalProxyTokenFlag(t *testing.T) {
 	for _, c := range []struct {
 		name     string
 		proxyTok bool
+		peer     string
 		hdr      map[string]string
 		want     bool
 	}{
-		{"proxy token, no identity", true, nil, true},
-		{"proxy token, person named", true, map[string]string{"X-User": "alice", "X-Groups": "staff"}, true},
-		{"normal token", false, nil, false},
+		{"proxy token, no identity", true, "192.0.2.7:1", nil, true},
+		{"proxy token, person named", true, "192.0.2.7:1", map[string]string{"X-User": "alice", "X-Groups": "staff"}, true},
+		{"proxy token, untrusted peer ignores header", true, "198.51.100.1:1", map[string]string{"X-User": "alice", "X-Groups": "staff"}, true},
+		{"normal token", false, "192.0.2.7:1", nil, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			code, p := doProxy(proxyStore(t, Policy{Permissions: []Permission{{KB: "kb-a", Write: true}}}, c.proxyTok), "192.0.2.7:1", c.hdr)
+			code, p := doProxy(proxyStore(t, Policy{Permissions: []Permission{{KB: "kb-a", Write: true}}}, c.proxyTok), c.peer, c.hdr)
 			if code != 200 || p.ProxyToken != c.want {
 				t.Fatalf("status %d, ProxyToken = %v, want %v (principal %+v)", code, p.ProxyToken, c.want, p)
 			}
