@@ -11,7 +11,8 @@ production recipe types against `tests/<name>.yaml`, then through a fixed list o
 `http.request` is answered by `starcore.Replay`: recorded exchanges carried on `CallSpec`, that run every check a live
 call runs (method, scheme, credentials in the url, the manifest's `net`, headers, caps, the redirect rules for a recorded
 3xx) and then answer from the recording instead of resolving or dialing. A request with no recording fails naming method
-and url. Only `plugin test` sets it.
+and url. Only `plugin test` sets it. A stdio connector is tested by starting it for real and making the scenario's calls
+through `connector.Open`, with the descriptor's allowlist and caps; an http connector is a live server and is skipped.
 
 **Why.** An author must learn that a recipe is wrong before a user does, and the only definition of a valid listing is
 the production parser, so the kit calls it rather than re-implementing it: a recipe passes when a Surveyor would accept
@@ -27,6 +28,8 @@ that a replayed call exercises the host's checks but not the dial, so the privat
 - A live dry run as the harness: `surveyor source test` already is one, and it needs the real system, a credential and a
   Surveyor config; it cannot be a repeatable fixture.
 - Re-implementing the parser in the kit: two definitions of a valid listing drift.
+- Recording an http connector's MCP traffic: a recording of a session says nothing about the server it came from, and a
+  live call would make `plugin test` depend on a network and a credential.
 
 **Consequences.** Nothing the Surveyor runs may set `CallSpec.Replay`: `TestOnlyThePluginTestKitSetsReplay` lists the
 files that name it. A check added to `recipetest.Checks` is documented in `docs/plugins.md` in the same change. An exec
