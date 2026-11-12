@@ -50,6 +50,7 @@ func TestObserveCalls_RecordsUnexpectedErrorsAsCodesOnly(t *testing.T) {
 		{"not found", "not_found: " + pageText, ""},
 		{"stale write is retried", "stale_write: " + pageText, ""},
 		{"read only grant", "read_only_profile: " + pageText, ""},
+		{"a tool prefixing its own refusal", "concept_read: " + pageText, ""},
 		{"validation text has no code", "invalid params: " + pageText, ""},
 		{"a sentence", pageText, ""},
 	} {

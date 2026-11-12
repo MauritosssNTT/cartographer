@@ -204,7 +204,7 @@ func (o observed) ListTools() ([]client.ToolInfo, error) { return o.inner.ListTo
 func (o observed) CallTool(name string, args any) (client.ToolOutput, error) {
 	out, err := o.inner.CallTool(name, args)
 	if err == nil && out.IsError {
-		if code, ok := unexpectedCode(out.Text); ok {
+		if code, ok := unexpectedCode(name, out.Text); ok {
 			o.log.Note(componentproto.CandidateToolError, name, o.kb, code)
 		}
 	}
@@ -225,16 +225,18 @@ func NoteContract(tools ToolCaller, tool string) {
 	}
 }
 
-// unexpectedCode classifies an error result's text: an internal error is
-// always a candidate; otherwise the leading `<code>:` token is, when it is
-// shaped like a code and is not a refusal the Surveyor expects. A text with no
-// leading code (a validation message) is not a candidate. Only the code leaves.
-func unexpectedCode(text string) (string, bool) {
+// unexpectedCode classifies the error result of a call to tool: an internal
+// error is always a candidate; otherwise the leading `<code>:` token is, when it
+// is shaped like a code, is not a refusal the Surveyor expects and is not the
+// tool's own name (a tool prefixes its validation and refusal messages with it:
+// that is a refusal, not a code). A text with no leading code is not a
+// candidate. Only the code leaves.
+func unexpectedCode(tool, text string) (string, bool) {
 	if strings.HasPrefix(text, client.InternalErrorPrefix) {
 		return internalErrorCode, true
 	}
 	head, _, found := strings.Cut(text, ":")
-	if !found || !candidateCodeRe.MatchString(head) || expectedRefusals[head] || strings.HasPrefix(head, "read_only") {
+	if !found || head == tool || !candidateCodeRe.MatchString(head) || expectedRefusals[head] || strings.HasPrefix(head, "read_only") {
 		return "", false
 	}
 	return head, true
