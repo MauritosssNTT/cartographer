@@ -67,3 +67,44 @@ maintenance: {auto_repair: false}
 		t.Errorf("UnknownKeys of a typo = %+v, want one with the hint http", got)
 	}
 }
+
+// Keys older releases read and the code no longer parses are retired, not
+// unknown: no typo warning, and the realignment names and drops each (#2000).
+func TestRemovedKeysOfOlderReleasesAreRetired(t *testing.T) {
+	data := []byte(`http: ":39273"
+search:
+  ollama_url: http://ollama:11434
+  ollama_model: nomic-embed-text
+peers:
+  enabled: true
+mcp:
+  mount_mode: per-kb
+  tool_prefix_mode: kb-name
+kbs:
+  - remote: https://git.example.com/user/kb-a.git
+    tool_prefix: old
+`)
+	if got := UnknownKeys(data); len(got) != 0 {
+		t.Errorf("UnknownKeys = %+v, want none: the removed keys are retired", got)
+	}
+	out, rep, err := Schema.Realign(data, Retired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropped := map[string]bool{}
+	for _, c := range rep.Changes {
+		if c.Kind == "removed" {
+			dropped[c.Path] = true
+		}
+	}
+	for _, p := range []string{"search", "peers", "mcp.mount_mode", "mcp.tool_prefix_mode", "kbs[0].tool_prefix"} {
+		if !dropped[p] {
+			t.Errorf("the realignment did not drop %s: %+v", p, rep.Changes)
+		}
+	}
+	for _, s := range []string{"ollama", "peers", "mount_mode", "tool_prefix"} {
+		if strings.Contains(string(out), s) {
+			t.Errorf("the realigned file still holds %q:\n%s", s, out)
+		}
+	}
+}
