@@ -284,6 +284,16 @@ type ApplyOptions struct {
 	// Only read for ScopeProject.
 	InstructionsRel string
 
+	// OmitPathsTable renders the placeholder section of the instructions block
+	// without its "Local paths" table: the paragraph stays, and points to
+	// `cartographer resolve` (#1897). The client sets it, from
+	// InstructionsDestTracked, when the project-scope file the block goes into
+	// is tracked by git: the table holds absolute paths of this machine, in a
+	// file everyone who clones the repository shares. It is part of what Apply
+	// and the status diff both judge the recorded PathsSectionHash with, so the
+	// two callers set it from the same answer.
+	OmitPathsTable bool
+
 	// HookSettingsRel, when non-empty, is the project-scope settings file
 	// Claude Code hooks are registered in, instead of .claude/settings.json:
 	// a derived workspace binding never edits a settings.json git tracks, so
@@ -2333,7 +2343,7 @@ func applyInstructionsGroup(m contract.Manifest, diff Diff, opts ApplyOptions, t
 		}
 	}
 	if opts.ExpandPlaceholders && len(signed) > 0 {
-		pathsSection = buildPathsSection(tracker.resolved)
+		pathsSection = buildPathsSection(pathsTableRows(opts, tracker))
 		*pathsHash = pathsSectionHash(sharedSection + "\x00" + pathsSection + cliHashPart)
 		if !triggered && *pathsHash != opts.Lock.PathsSectionHash {
 			triggered = true
@@ -4111,7 +4121,7 @@ func instructionsResolutionDrift(m contract.Manifest, opts ApplyOptions, tracker
 	}
 	// The cli sentence is in the hash Apply records, so it is in this one (#1846).
 	cliPart := cliHashPartOf(cliSentenceFor(opts.Provider))
-	if pathsSectionHash(shared+"\x00"+buildPathsSection(tracker.resolved)+cliPart) == opts.Lock.PathsSectionHash {
+	if pathsSectionHash(shared+"\x00"+buildPathsSection(pathsTableRows(opts, tracker))+cliPart) == opts.Lock.PathsSectionHash {
 		return nil
 	}
 	return signed

@@ -499,6 +499,48 @@ func TestCheckSymlinkedDestinations(t *testing.T) {
 		}
 	})
 
+	t.Run("a link to a tracked file says the block would land in it", func(t *testing.T) {
+		// #1897: CLAUDE.md -> AGENTS.md, both in the repository.
+		repo := cloneOf(t, "example.com/owner/repo", "AGENTS.md")
+		link := filepath.Join(repo, "CLAUDE.md")
+		if err := os.Symlink("AGENTS.md", link); err != nil {
+			t.Fatal(err)
+		}
+		f := symlinkedDestinationFindings("claude", repo, provisioning.ManagedProjectRoots(configurator.ProviderClaudeCode, repo))
+		if len(f) != 1 || f[0].Severity != doctorWarning {
+			t.Fatalf("findings = %+v, want one warning", f)
+		}
+		target, err := filepath.EvalSymlinks(filepath.Join(repo, "AGENTS.md"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{
+			"is tracked by git",
+			"would make the instructions block land in the tracked " + target,
+			"replace the symlink " + link + " with a real file first",
+			"cartographer client symlinks claude --add '" + link + "'",
+		} {
+			if !strings.Contains(f[0].Fix, want) {
+				t.Errorf("fix = %q, want it to contain %q", f[0].Fix, want)
+			}
+		}
+	})
+
+	t.Run("a link to an untracked file keeps the plain fix", func(t *testing.T) {
+		repo := cloneOf(t, "example.com/owner/repo")
+		if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(repo, "CLAUDE.md")
+		if err := os.Symlink("AGENTS.md", link); err != nil {
+			t.Fatal(err)
+		}
+		f := symlinkedDestinationFindings("claude", repo, provisioning.ManagedProjectRoots(configurator.ProviderClaudeCode, repo))
+		if len(f) != 1 || strings.Contains(f[0].Fix, "tracked by git") || !strings.Contains(f[0].Fix, "with the real directory or file, or: ") {
+			t.Errorf("findings = %+v, want the plain fix", f)
+		}
+	})
+
 	t.Run("a listed link is info and has no fix", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(dir, ".claude"), 0o755); err != nil {

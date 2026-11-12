@@ -82,6 +82,24 @@ func (p syncProjection) Label() string {
 	return p.Provider + " [" + p.Workspace + "]"
 }
 
+// omitPathsTable decides, once for a projection, whether its instructions
+// block leaves out the "Local paths" table because the file it goes into is
+// tracked by git (#1897): sync (materializeForProviders) and status
+// (workspaceProviderDiff) both ask it, so the paths-section hash they judge
+// agrees. Only a workspace projection can answer yes; where git cannot say, the
+// table stays.
+func omitPathsTable(p syncProjection) bool {
+	if p.Scope != contract.ScopeProject || p.Workspace == "" {
+		return false
+	}
+	return provisioning.InstructionsDestTracked(provisioning.ApplyOptions{
+		Provider:        configurator.Provider(p.Provider),
+		BaseDir:         p.BaseDir,
+		Scope:           p.Scope,
+		InstructionsRel: p.InstructionsRel,
+	})
+}
+
 // projectionsFor resolves every projection a provider currently has.
 //
 // In the default scope this is exactly one entry, identical in every respect to

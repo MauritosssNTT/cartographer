@@ -279,6 +279,17 @@ const placeholderParagraph = "### Local paths\n\n" +
 	"When writing to a KB, cite only the keys declared in its `paths.yaml` (read it with `artifact_read`), " +
 	"and declare a new key there in the same change that first cites it."
 
+// pathsTableRows is what the "Local paths" table of this Apply is built from:
+// everything resolved, or nothing when opts.OmitPathsTable keeps the machine's
+// absolute paths out of a tracked file (#1897). Apply and the status diff both
+// go through it, so the hash they compare is built from the same rows.
+func pathsTableRows(opts ApplyOptions, tracker *expansionTracker) map[string]string {
+	if opts.OmitPathsTable {
+		return nil
+	}
+	return tracker.resolved
+}
+
 // buildPathsSection renders the placeholder part of the instructions block:
 // the fixed paragraph, then the "Local paths" table when anything resolved.
 func buildPathsSection(resolved map[string]string) string {

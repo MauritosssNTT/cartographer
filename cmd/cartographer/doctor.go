@@ -31,6 +31,7 @@ import (
 	"github.com/BeppeTemp/cartographer/internal/agents"
 	"github.com/BeppeTemp/cartographer/internal/clientconfig"
 	"github.com/BeppeTemp/cartographer/internal/configurator"
+	"github.com/BeppeTemp/cartographer/internal/gitx"
 	"github.com/BeppeTemp/cartographer/internal/mcpserver"
 	"github.com/BeppeTemp/cartographer/internal/provisioning"
 	"github.com/BeppeTemp/cartographer/internal/safewrite"
@@ -1111,13 +1112,41 @@ func symlinkedDestinationFindings(provider, base string, roots []string) []docto
 		if blocker == "" {
 			blocker = path
 		}
+		fix := "replace the symlink " + escapeControl(blocker) + " with the real directory or file, or: " + symlinksAddCommand(provider, blocker)
+		if tracked, ok := trackedLinkTarget(path); ok {
+			// Listing the link would make Apply write through it (#1897).
+			fix = "replace the symlink " + escapeControl(blocker) + " with a real file first: its target " + escapeControl(tracked) +
+				" is tracked by git, so listing the link (" + symlinksAddCommand(provider, blocker) +
+				") would make the instructions block land in the tracked " + escapeControl(tracked) + ", shared with everyone who clones the repository"
+		}
 		out = append(out, doctorFinding{
 			Check: "symlink", Severity: doctorWarning, Path: path,
 			Message: fmt.Sprintf("[%s] %q is a symlink: provisioning writes would land in %q, so Cartographer refuses them", provider, escapeControl(path), escapeControl(target)),
-			Fix:     "replace the symlink " + escapeControl(blocker) + " with the real directory or file, or: " + symlinksAddCommand(provider, blocker),
+			Fix:     fix,
 		})
 	}
 	return out
+}
+
+// trackedLinkTarget returns the file a symlink at path finally resolves to when
+// it is a regular file that git tracks in its own repository: a directory link
+// (a skills folder) is not what an instructions block lands in, and a file git
+// does not track, or no repository at all, is not a finding.
+func trackedLinkTarget(path string) (string, bool) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	name := filepath.Base(resolved)
+	tracked, err := gitx.TrackedPaths(filepath.Dir(resolved), name)
+	if err != nil || !tracked[name] {
+		return "", false
+	}
+	return resolved, true
 }
 
 // checkTriggerCoverage: a provider with no session hook, or one that fires only
