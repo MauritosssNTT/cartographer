@@ -67,9 +67,14 @@ match while `x` may still be writing: `x` dies of SIGPIPE (141), a passing check
 reads as a miss, and a not-discloses check passes on a leak (#1908). Match a
 captured value with a here-string, `grep -q … <<<"$x"`, never a pipe.
 `lib/selftest.sh` runs first in `run.sh` and pins the `assert_mcp_*` helpers with
-a 300 KB body carrying the needle on line 1; `TestE2EScriptsNoPipeIntoGrepQuiet`
-(`internal/repodocs`) refuses the pattern in every script under `test/e2e`, and a
-line that shows the trap on purpose carries `e2e-pipe-ok`.
+a 300 KB body carrying the needle on line 1, and fails when its control (the old
+pipe form) stops hitting SIGPIPE. `TestShellScriptsNoPipeIntoGrepQuiet`
+(`internal/repodocs`) refuses a pipeline that ends in a quiet grep (`-q`/`--quiet`,
+flags in any position, `command grep`, the `grep` on the next line after a `|`) in
+every script that runs with pipefail: all of `test/e2e` and `test/lib`, and any
+other script under `test/` that sets it (the POSIX sh suites in `test/install` do
+not). The line that shows the trap on purpose carries `e2e-pipe-ok`, honoured only
+in `lib/selftest.sh`.
 
 ## Structure
 
