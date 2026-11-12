@@ -315,8 +315,11 @@ export function openPanels(): void {
  *  /health). This is the one wait with its own budget: the tests that use it are
  *  about the integration and need the whole boot, which on a heavily loaded gate
  *  can outlast Testing Library's default 1000 ms. The content tests do not boot
- *  the App (they mount the sheet alone), so they keep the default; the budget
- *  stays below vitest's 5000 ms test timeout and nothing is raised globally. */
+ *  the App (they mount the sheet alone), so they keep the default. A test that
+ *  uses this wait also clicks, reads the dialog and waits once more at the
+ *  default budget, which does not fit vitest's default 5000 ms per-test timeout
+ *  next to the 4000 ms here: each of those tests sets its own `{ timeout:
+ *  10_000 }`, and nothing is raised globally. */
 export function bootedVersionButton(version: RegExp): Promise<HTMLElement> {
   return screen.findByLabelText(version, undefined, { timeout: 4000 });
 }

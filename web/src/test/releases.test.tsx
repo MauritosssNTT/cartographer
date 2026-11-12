@@ -45,7 +45,9 @@ function stub(view: ReleasesView | (() => Response) = VIEW) {
  * loaded gate it can outlast Testing Library's 1000 ms; the waits there are a
  * label lookup (no role, no styles) and the dialog is read synchronously after
  * the click. The boot wait alone has its own budget (bootedVersionButton, in
- * fixtures.ts); the content tests do not boot the App and keep the default.
+ * fixtures.ts) and those three tests their own per-test timeout (10 s, above
+ * vitest's default 5 s that the boot budget plus the rest would not fit); the
+ * content tests do not boot the App and keep the defaults.
  */
 const VERSION_BUTTON = /Meridian version v1\.2\.3/;
 
@@ -71,7 +73,7 @@ describe("the release history sheet", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("opens from the version in the rail's foot and lists every release, newest first", async () => {
+  it("opens from the version in the rail's foot and lists every release, newest first", { timeout: 10_000 }, async () => {
     const fetchMock = stub();
     const { sheet } = await openFromRail();
     expect(sheet).toHaveAttribute("aria-modal", "true");
@@ -84,7 +86,7 @@ describe("the release history sheet", () => {
     expect(fetchMock.mock.calls.filter(([u]) => String(u).includes("/releases"))).toHaveLength(1);
   });
 
-  it("does not fetch the history before the version is clicked", async () => {
+  it("does not fetch the history before the version is clicked", { timeout: 10_000 }, async () => {
     const fetchMock = stub();
     render(<App />);
     await bootedVersionButton(VERSION_BUTTON);
@@ -195,7 +197,7 @@ describe("the release history sheet", () => {
     expect(await within(sheet).findByRole("heading", { name: "v1.3.0" })).toBeInTheDocument();
   });
 
-  it("closes with Escape and returns focus to the version", async () => {
+  it("closes with Escape and returns focus to the version", { timeout: 10_000 }, async () => {
     stub();
     const { user, sheet } = await openFromRail();
     await within(sheet).findByRole("list", { name: "Releases, newest first" });

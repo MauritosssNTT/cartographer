@@ -125,7 +125,7 @@ describe("the bearer token", () => {
 });
 
 describe("an artifact's files are rendered as untrusted content", () => {
-  it("keeps script in a SKILL.md, its frontmatter and a script file inert", async () => {
+  it("keeps script in a SKILL.md, its frontmatter and a script file inert", { timeout: 10_000 }, async () => {
     window.history.replaceState(null, "", "/ui/?kb=kb-a&panel=artifacts&artifact=skill%2Freview");
     const hostile = {
       ...reviewSkill,
@@ -141,7 +141,11 @@ describe("an artifact's files are rendered as untrusted content", () => {
     stubApi({ "/artifact?": () => json(hostile) });
     const user = userEvent.setup();
     render(<App />);
-    const detail = await screen.findByRole("article", { name: "Artifact skill/review" });
+    // The article carries aria-label: a label lookup waits for the boot without
+    // a role query (no computed styles over the whole app under css: true), with
+    // the budget of a boot rather than the default 1000 ms.
+    const detail = await screen.findByLabelText("Artifact skill/review", undefined, { timeout: 4000 });
+    expect(detail.tagName).toBe("ARTICLE");
     expect(detail.querySelector("script, img")).toBeNull();
     // Shown as text: no element carries the handler.
     expect(detail.querySelector("[onerror]")).toBeNull();
@@ -155,7 +159,7 @@ describe("an artifact's files are rendered as untrusted content", () => {
 });
 
 describe("a release's changelog is rendered as untrusted content (D862)", () => {
-  it("keeps script, an onerror image and a javascript: link inert, and refuses a non-https release URL", async () => {
+  it("keeps script, an onerror image and a javascript: link inert, and refuses a non-https release URL", { timeout: 10_000 }, async () => {
     window.history.replaceState(null, "", "/ui/?kb=kb-a");
     localStorage.clear();
     sessionStorage.clear();
