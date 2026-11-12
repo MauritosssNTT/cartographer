@@ -87,18 +87,15 @@ func withBinding(cfg *clientconfig.Config) *clientconfig.Config {
 }
 
 // TestWithBindingNeedsNoFilesystem pins #1847: withBinding must work even if
-// the shared directory is gone and the temp directory is unreachable.
+// the shared directory is gone and the temp directory is unreachable. The
+// directory is not touched (a rename under TEMP can itself fail on Windows
+// while an indexer holds a handle): elsewhereDir is pointed at a path that
+// does not exist, so any code re-deriving the binding from it would fail.
 func TestWithBindingNeedsNoFilesystem(t *testing.T) {
-	moved := elsewhereDir + ".moved"
-	if err := os.Rename(elsewhereDir, moved); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := os.Rename(moved, elsewhereDir); err != nil {
-			t.Fatal(err)
-		}
-	})
+	saved := elsewhereDir
+	t.Cleanup(func() { elsewhereDir = saved })
 	missing := filepath.Join(t.TempDir(), "missing")
+	elsewhereDir = missing
 	for _, k := range []string{"TMP", "TEMP", "TMPDIR"} {
 		t.Setenv(k, missing)
 	}
