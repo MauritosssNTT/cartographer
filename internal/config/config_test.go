@@ -74,6 +74,9 @@ func TestLoadFullYAML(t *testing.T) {
 		UpdateCheck: true,
 		Feedback:    FeedbackConfig{Destination: "github"},
 		Maintenance: MaintenanceConfig{AutoRepair: true},
+		// The removed search block loads, ignored, and now says so like any
+		// key no table knows (#2000).
+		Warnings: []string{"search: unknown key, ignored (line 17)"},
 	}
 
 	want.Origins = cfg.Origins // origins are covered in origin_test.go
@@ -411,6 +414,11 @@ func TestRemovedSearchConfigIsIgnored(t *testing.T) {
 	}
 	FromEnv(got)
 	FromEnv(want)
+	// The block changes nothing but says so, like any key no table knows (#2000).
+	if n := len(got.Warnings) - len(want.Warnings); n != 1 || !strings.Contains(got.Warnings[len(got.Warnings)-1], "search: unknown key") {
+		t.Errorf("warnings = %v, want those of the file without the block and one for search", got.Warnings)
+	}
+	got.Warnings = want.Warnings
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("a stale search block changed the config:\ngot  %+v\nwant %+v", got, want)
 	}
