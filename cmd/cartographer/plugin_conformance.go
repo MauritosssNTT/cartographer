@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/BeppeTemp/cartographer/internal/plugin"
 	"github.com/BeppeTemp/cartographer/internal/plugin/core"
@@ -19,9 +20,11 @@ import (
 const pluginTestEnvPrefix = "CARTOGRAPHER_PLUGIN_TEST_"
 
 // pluginTest runs the recipes of a plugin folder against their scenarios
-// (tests/<name>.yaml). It needs no server, token or model, and no network: an
-// http.request of a Starlark recipe is answered from the recordings. Exit 0 all
-// passed, 1 a step failed, 2 it could not run.
+// (tests/<name>.yaml). It needs no server, token or model. A Starlark recipe
+// runs in process and its http.request is answered from the recordings, so it
+// touches no network; an exec recipe is a child process that RUNS AS THE USER,
+// unapproved and with the user's network, so each command is printed on stderr
+// before it runs. Exit 0 all passed, 1 a step failed, 2 it could not run.
 func pluginTest(args []string) int {
 	output, args, err := outputFlag(args)
 	var only string
@@ -126,6 +129,9 @@ func testRecipes(p *core.Plugin, root, only string) ([]recipetest.Result, error)
 		if in.Exec == nil && in.Star == nil {
 			return nil, fmt.Errorf("recipe %s: the Surveyor loader did not build it", rc.Name)
 		}
+		if in.Exec != nil {
+			fmt.Fprintln(os.Stderr, execAnnouncement(rc.Name, in.Exec))
+		}
 		results = append(results, recipetest.Run(context.Background(), in)...)
 	}
 	if !found {
@@ -135,4 +141,15 @@ func testRecipes(p *core.Plugin, root, only string) ([]recipetest.Result, error)
 		return nil, fmt.Errorf("the plugin has no recipes to test (recipes/<name>/ on its surveyor side)")
 	}
 	return results, nil
+}
+
+// execAnnouncement is the line printed before a recipe's own command runs: it is
+// a program of the folder, started as the user without the approval an install
+// asks for, so the author sees what is about to run. Escaped like the preview.
+func execAnnouncement(name string, c *recipe.ExecConfig) string {
+	argv := make([]string, 0, 1+len(c.Args))
+	for _, a := range append([]string{c.Command}, c.Args...) {
+		argv = append(argv, escapeControl(a))
+	}
+	return fmt.Sprintf("running %s as you, unapproved: %s", escapeControl(name), strings.Join(argv, " "))
 }
