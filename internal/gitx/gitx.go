@@ -572,7 +572,7 @@ func ResetPaths(dir string, paths ...string) error {
 		return nil
 	}
 	if out, err := runGit(dir, append([]string{"--literal-pathspecs", "reset", "-q", "--"}, paths...)...); err != nil {
-		return fmt.Errorf("git reset -- paths: %w: %s", err, out)
+		return fmt.Errorf("git reset -- paths: %w: %s%s", err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
@@ -602,7 +602,7 @@ func commit(dir, message, authorName, authorEmail string, env ...string) error {
 			strings.Contains(out, "nothing added to commit") {
 			return ErrNothingToCommit
 		}
-		return fmt.Errorf("git commit: %w: %s", err, out)
+		return fmt.Errorf("git commit: %w: %s%s", err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
@@ -1702,7 +1702,7 @@ func Untrack(dir string, paths ...string) error {
 		return nil
 	}
 	if out, err := runGit(dir, append([]string{"--literal-pathspecs", "rm", "--cached", "-q", "--"}, paths...)...); err != nil {
-		return fmt.Errorf("git rm --cached: %w: %s", err, out)
+		return fmt.Errorf("git rm --cached: %w: %s%s", err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
@@ -1711,7 +1711,7 @@ func Untrack(dir string, paths ...string) error {
 func AddPath(dir, path string) error {
 	out, err := runGit(dir, "--literal-pathspecs", "add", "--", path)
 	if err != nil {
-		return fmt.Errorf("git add %s: %w: %s", path, err, out)
+		return fmt.Errorf("git add %s: %w: %s%s", path, err, out, indexLockHint(dir, out))
 	}
 	return nil
 }
