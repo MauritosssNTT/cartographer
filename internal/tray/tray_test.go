@@ -405,13 +405,15 @@ func TestRunRefreshesAgentsSparingly(t *testing.T) {
 	<-done
 }
 
-// The menu asking for fresh rows reads the agents once, shows the result at
-// once (no tick involved), and a burst or a request during a read adds nothing.
+// The menu asking for fresh rows reads the agents, shows the result at once (no
+// tick involved), and a request that cannot start a read now (the debounce
+// window, a read in flight) is remembered: one more read starts when the window
+// has ended, at the next tick, however many requests came. It is never lost.
 func TestRunRefreshesAgentsOnRequest(t *testing.T) {
 	f := &fakeEnv{
 		status: service.Status{Installed: true, HTTPAddr: "127.0.0.1:1"},
 		health: &client.Health{Version: "1", Ready: boolp(true)},
-		ticks:  make(chan time.Time), // never ticks: everything below happens off a request
+		ticks:  make(chan time.Time), // ticks only when the test sends
 	}
 	d := f.deps()
 	var mu sync.Mutex
@@ -439,8 +441,9 @@ func TestRunRefreshesAgentsOnRequest(t *testing.T) {
 			}
 		}
 	}
-	// request sends twice: the second send proves Run has handled the first.
+	// request and tick send twice: the second send proves Run has handled the first.
 	request := func() { requests <- struct{}{}; requests <- struct{}{} }
+	tick := func() { f.ticks <- time.Now(); f.ticks <- time.Now() }
 	settled := func(want int) { // a read that should not start would be counted within this
 		t.Helper()
 		time.Sleep(50 * time.Millisecond)
@@ -458,6 +461,13 @@ func TestRunRefreshesAgentsOnRequest(t *testing.T) {
 			return Snapshot{}
 		}
 	}
+	finishRead := func(out <-chan Snapshot, wantN int) {
+		t.Helper()
+		gate <- struct{}{}
+		if s := nextSnapshot(out); !s.Agents.Known || s.Agents.N != wantN {
+			t.Fatalf("a finished read was not emitted at once: %+v, want read %d", s.Agents, wantN)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	out := make(chan Snapshot, 16)
@@ -470,32 +480,47 @@ func TestRunRefreshesAgentsOnRequest(t *testing.T) {
 	}
 	waitReads(1) // the read at start, still running
 
-	// A request during an in-flight read coalesces into it.
+	// A request during a read does not ride on it: the rows it will return may
+	// predate what the user just did. It is remembered, and served after the
+	// window that began with that read.
 	request()
 	settled(1)
-	gate <- struct{}{}
-	if s := nextSnapshot(out); !s.Agents.Known || s.Agents.N != 1 {
-		t.Fatalf("a finished read was not emitted at once: %+v", s.Agents)
-	}
+	finishRead(out, 1)
+	settled(1) // the window has not ended: nothing starts at the end of the read
 
-	// A burst within the debounce window reads nothing.
+	// A burst within the window adds nothing, and a tick inside it neither.
 	request()
 	advance(AgentsDebounce - time.Second)
 	request()
+	tick()
 	settled(1)
 
-	// Past the window one request reads once, however many follow it.
+	// Once the window has passed, the next tick starts the one read the burst asked for.
 	advance(2 * time.Second)
-	request()
+	tick()
 	waitReads(2)
+	tick()
+	settled(2)
+
+	// Requests during that read are one more read, after it and after the window.
 	request()
 	request()
 	settled(2)
-	gate <- struct{}{}
-	if s := nextSnapshot(out); s.Agents.N != 2 {
-		t.Fatalf("the requested read was not emitted at once: %+v", s.Agents)
-	}
+	finishRead(out, 2)
 	settled(2)
+	advance(AgentsDebounce)
+	tick()
+	waitReads(3)
+	finishRead(out, 3)
+
+	// Nothing pending: ticks read nothing, and a request outside the window reads at once.
+	advance(AgentsDebounce)
+	tick()
+	settled(3)
+	request()
+	waitReads(4)
+	finishRead(out, 4)
+	settled(4)
 	if len(out) != 0 {
 		t.Errorf("%d unexpected extra snapshots", len(out))
 	}

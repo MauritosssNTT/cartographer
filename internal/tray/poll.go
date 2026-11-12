@@ -23,9 +23,10 @@ const (
 	// `cartographer status` path, which reads files and asks the server, and
 	// its answer changes only on a sync.
 	AgentsInterval = 5 * time.Minute
-	// AgentsDebounce is the shortest time between two reads that the menu
-	// asks for (Deps.AgentRequests): opening it twice in a row, or hovering the
-	// icon, reads the agent clients once.
+	// AgentsDebounce is the shortest time between the starts of two reads
+	// (Deps.AgentRequests): opening the menu twice in a row, or hovering the
+	// icon, reads the agent clients once now and at most once more when the
+	// window ends.
 	AgentsDebounce = 10 * time.Second
 )
 
@@ -51,10 +52,13 @@ type Deps struct {
 	// a poll shows the newest result, and a read that finishes is shown at once.
 	Agents func() Agents
 	// AgentRequests carries the UI's wish for fresh agent rows (the menu is
-	// opening); optional. A request starts a read of Agents unless one began
-	// less than AgentsDebounce ago or is still running, and is then dropped: the
-	// running read answers it. The sender must not block (a 1-slot channel and a
-	// non-blocking send).
+	// opening); optional. A request starts a read of Agents at once, unless one
+	// began less than AgentsDebounce ago or is still running: it is then
+	// remembered (one, however many follow) and its read starts when the window
+	// has ended and no read runs, at the next poll tick at the latest. A read
+	// that was already running does not answer a request that came after it
+	// began: its rows may predate what the user just did (a `sync`). The sender
+	// must not block (a 1-slot channel and a non-blocking send).
 	AgentRequests <-chan struct{}
 	// Now is the clock of the debounce; optional (time.Now).
 	Now func() time.Time
@@ -135,6 +139,7 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 	var agents Agents
 	refresh := make(chan struct{}, 1)
 	readDone := make(chan struct{}, 1)
+	var queued, completed int    // reads handed to the reader / finished; completed is guarded by mu
 	var requests <-chan struct{} // nil (never ready) with no Agents to read
 	if d.Agents != nil {
 		requests = d.AgentRequests
@@ -148,6 +153,7 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 				a := d.Agents()
 				mu.Lock()
 				agents = a
+				completed++
 				mu.Unlock()
 				select {
 				case readDone <- struct{}{}:
@@ -156,15 +162,31 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 			}
 		}()
 	}
-	// inflight and lastRead belong to this goroutine: set when a read is
-	// queued, cleared when readDone is taken.
-	inflight := false
+	// queued, lastRead and pending belong to this goroutine. A read is running
+	// or waiting while queued > completed: counting them (readDone is a 1-slot
+	// signal and may stand for two reads) keeps that exact when a tick queues a
+	// read behind a running one.
 	var lastRead time.Time
+	pending := false // a request came after the newest read was queued
+	reading := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return queued > completed
+	}
 	queueRead := func() {
+		pending = false // the read queued now begins after every request so far
 		select {
 		case refresh <- struct{}{}:
-			inflight, lastRead = true, d.now()
-		default: // a read is already queued
+			queued++
+			lastRead = d.now()
+		default: // a read is already queued, and begins after them too
+		}
+	}
+	// servePending starts the read a request asked for once the debounce
+	// window since the newest read has ended and none is running.
+	servePending := func() {
+		if pending && !reading() && d.now().Sub(lastRead) >= AgentsDebounce {
+			queueRead()
 		}
 	}
 	every := max(1, int(AgentsInterval/interval))
@@ -194,15 +216,14 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 			return
 		case <-ticks:
 			poll()
+			servePending()
 		case <-requests:
-			if !inflight && d.now().Sub(lastRead) >= AgentsDebounce {
-				queueRead()
-			}
+			pending = true
+			servePending()
 		case <-readDone:
 			// A read finished: show it now, not at the next tick. The snapshot
 			// is the last one with the new rows; nothing is probed, and the
 			// poll counter is left alone.
-			inflight = false
 			snap := last
 			mu.Lock()
 			snap.Agents = agents
@@ -211,6 +232,7 @@ func Run(ctx context.Context, d Deps, interval time.Duration, emit func(Snapshot
 				last = snap
 				emit(snap)
 			}
+			servePending()
 		}
 	}
 }

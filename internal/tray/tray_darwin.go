@@ -251,8 +251,9 @@ func (u *macUI) apply(sn Snapshot) {
 	u.button.Send(s("setImage:"), u.images[sn.State])
 	u.button.Send(s("setToolTip:"), nsString(StatusLine(sn)))
 
+	prev := u.snap
 	u.snap = sn // the menu is filled from it when it opens (menuNeedsUpdate:)
-	if u.open {
+	if refillOpenMenu(u.open, prev, sn) {
 		u.refill() // a result that lands while the menu shows is seen at once
 	}
 }

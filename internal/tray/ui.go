@@ -304,3 +304,12 @@ func (it MenuItem) CommandID() int {
 	}
 	return menuCommandBase + int(it.Action)
 }
+
+// refillOpenMenu says whether a snapshot that arrives while the menu shows
+// redraws it. Only a change of the Agents rows does: that is why a menu is
+// refilled live (the read the opening asked for ends after it opened). Any
+// other change waits for the next opening, because removing the items closes a
+// KB submenu the user has open.
+func refillOpenMenu(open bool, prev, next Snapshot) bool {
+	return open && prev.Agents != next.Agents
+}
