@@ -53,7 +53,12 @@ func TestRemedy_ClassifiedTextOnly(t *testing.T) {
 		"git push " + secret + ": remote: GH006: Protected branch update failed\nremote: see ssh://git@internal.example.com:2222/x": "protected",
 		"remote: GitLab: Author 'a' is not a member of team " + secret:                                                              "authored or committed",
 		"git push " + secret + ": Could not resolve host: git.example.com":                                                          "does not resolve",
-		"fatal: something unknown happened with " + secret + "\nremote: private line":                                               "the push failed",
+		// A push refused for its credentials, as SyncOut's ErrPushRefused words it: the
+		// three surfaces (/health, status, doctor) show the credentials remedy.
+		"the push to branch \"main\" cannot succeed by retrying and is not retried: the credentials were rejected: check the token. Git said: remote: Invalid username or password.\nfatal: Authentication failed for '" + secret + "'": "credentials were rejected",
+		"the push to branch \"main\" cannot succeed by retrying and is not retried: git had no credentials. Git said: fatal: could not read Username for 'https://git.example.com': terminal prompts disabled":                          "could not ask",
+		"the push to branch \"main\" cannot succeed by retrying and is not retried: the credentials were rejected. Git said: fatal: unable to access '" + secret + "': The requested URL returned error: 401":                           "credentials were rejected",
+		"fatal: something unknown happened with " + secret + "\nremote: private line": "the push failed",
 	}
 	for in, want := range cases {
 		got := Remedy(in)

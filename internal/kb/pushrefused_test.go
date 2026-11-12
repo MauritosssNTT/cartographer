@@ -100,7 +100,11 @@ func TestSyncOut_RejectedCredentialFailsAtOnce(t *testing.T) {
 	if !haveGit() {
 		t.Skip("git not in PATH")
 	}
-	for name, token := range map[string]string{"wrong token": "not-the-token", "no token": ""} {
+	for name, c := range map[string]struct{ token, remedy string }{
+		"wrong token": {"not-the-token", "the credentials were rejected: check the token or credential helper for this forge"},
+		"no token":    {"", "git had no credentials for this forge and could not ask: configure a token or credential helper, or use an ssh remote"},
+	} {
+		token := c.token
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			url, _ := gitxtest.HTTPRemote(t, "token", "s3cret")
@@ -121,7 +125,7 @@ func TestSyncOut_RejectedCredentialFailsAtOnce(t *testing.T) {
 			}
 			k.SetDefaultIdentity("Ada Example", "ada@example.test")
 			commitOne(t, k)
-			assertRefusedOnce(t, k, k.SyncOut(), "check the token or credential helper for this forge")
+			assertRefusedOnce(t, k, k.SyncOut(), c.remedy)
 		})
 	}
 }
