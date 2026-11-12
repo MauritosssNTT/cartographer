@@ -1091,9 +1091,9 @@ func fetchWith(dir, remote string, opts, env []string) error {
 // with it, past the client's 30s HTTP timeout (#348). The fetch is the
 // operation that meets an unreachable remote first; pull and push run after a
 // fetch has just succeeded. The deadline starts after netEnv, so one fetch
-// takes at most FetchTimeout plus the separate <=5s core.sshCommand probe
-// (skipped when GIT_SSH_COMMAND or GIT_SSH is set). A variable so tests can
-// shorten it.
+// takes at most FetchTimeout plus the separate core.sshCommand probe, bounded
+// at 5s plus a 1s pipe wait (skipped when GIT_SSH_COMMAND or GIT_SSH is set).
+// A variable so tests can shorten it.
 var FetchTimeout = 15 * time.Second
 
 // RemoteTimeoutError reports a git remote that did not answer in time. It is
@@ -1490,8 +1490,8 @@ func pushError(what string, err error, out string) error {
 // bound than FetchTimeout, but it is bounded all the same: an unbounded push
 // holds the KB's git lock, and every tool call behind it, for as long as the
 // remote stalls. As for FetchTimeout, the deadline starts after netEnv: a push
-// takes at most PushTimeout plus the <=5s core.sshCommand probe. A variable so
-// tests can shorten it.
+// takes at most PushTimeout plus the core.sshCommand probe, bounded at 5s plus
+// a 1s pipe wait. A variable so tests can shorten it.
 var PushTimeout = 60 * time.Second
 
 // PushSetUpstream pushes branch to remote and sets it as the branch's
