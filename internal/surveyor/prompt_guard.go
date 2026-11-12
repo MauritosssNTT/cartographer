@@ -77,10 +77,10 @@ func forgesLog(entry string) bool {
 	return false
 }
 
-// CallTool applies the rules above.
 // unwrap names the caller under the guard, for NoteContract.
 func (g *promptGuard) unwrap() ToolCaller { return g.inner }
 
+// CallTool applies the rules above.
 func (g *promptGuard) CallTool(name string, args any) (client.ToolOutput, error) {
 	g.mu.Lock()
 	wantReason := g.reason[name]

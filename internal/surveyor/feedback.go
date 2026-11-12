@@ -39,35 +39,51 @@ var expectedRefusals = map[string]bool{
 	"refused": true, "forbidden": true, "not_found": true, "stale_write": true, "conflict": true, "oversized": true,
 }
 
-// operationPrefixes are the domains of the server's tool names, and operationNames
-// the sub-operations and checks that prefix a message without being a tool:
-// `concept_move: ...` out of a concept_batch, `validate: ...`, `supersede: ...`. A
-// leading token that names an operation is a refusal's prefix, never a code.
-// internal/mcpserver's docs test keeps its own list of the same domains; a new
-// domain or sub-operation is one entry here.
-var (
-	operationPrefixes = []string{
-		"atlas_", "map_", "concept_", "index_", "log_", "graph_", "search_", "skill_", "service_", "secret_",
-		"artifact_", "template_", "asset_", "sync_", "git_", "kb_", "archive_", "dossier_", "conflict_",
-		"conflicts_", "commit_", "gate_", "changes_", "contradiction_", "source_",
-	}
-	operationNames = map[string]bool{
-		"validate": true, "lint": true, "supersede": true, "snapshot": true, "write_gate": true, "rewrite_links": true,
-		"inbound_links": true, "outbound_links": true, "repair_revert": true, "reindex": true,
-	}
-)
-
-func namesAnOperation(head string) bool {
-	if operationNames[head] {
-		return true
-	}
-	for _, p := range operationPrefixes {
-		if strings.HasPrefix(head, p) {
-			return true
-		}
-	}
-	return false
+// serverToolNames are the names of the tools the server registers
+// (mcpserver.RegisterKBTools): a result of one of them opens with its own name
+// when it refuses, so a leading token that is one is an operation, never a code.
+// The list is exact, not a domain prefix, so a real code that begins with a
+// domain word (`concept_too_large`, `template_unusable`) stays a candidate.
+// cmd/cartographer's test compares it to the server's registry, so a new tool
+// fails there until it is added here.
+var serverToolNames = []string{
+	"artifact_delete", "artifact_list", "artifact_move", "artifact_read", "artifact_write", "asset_delete", "asset_list",
+	"asset_read", "asset_write", "atlas_overview", "changes_since", "commit_gate", "concept_archive", "concept_batch",
+	"concept_collapse", "concept_delete", "concept_expand", "concept_history", "concept_list", "concept_merge",
+	"concept_move", "concept_new", "concept_patch", "concept_read", "concept_transfer", "concept_write",
+	"conflict_resolve", "conflicts_list", "contradiction_report", "gate_check", "git_conflict_resolve", "graph_context",
+	"graph_neighbors", "graph_path", "index_get", "index_patch", "ingest_setup", "kb_guide", "kb_repair", "kb_review",
+	"kb_status", "link_suggest", "lint", "log_append", "log_tail", "map_create", "map_delete", "map_list", "map_update",
+	"preset_list", "reindex", "repair_revert", "search", "secret_resolve", "secret_set", "service_get", "service_list",
+	"skill_install", "skill_list", "snapshot", "source_list", "source_register", "supersede", "sync_check", "sync_pull",
+	"sync_status", "template_list", "validate", "work_list",
 }
+
+// subOperationNames prefix a message without being a registered tool: a check
+// that refuses a write (`write_gate: refused ...`), the link families a
+// concept_move or a concept_archive reports, and the Surveyor's own ingest tool.
+var subOperationNames = []string{"write_gate", "rewrite_links", "inbound_links", "outbound_links", "source_fetch"}
+
+var operationSet = func() map[string]bool {
+	m := map[string]bool{}
+	for _, n := range OperationNames() {
+		m[n] = true
+	}
+	return m
+}()
+
+// OperationNames is every leading token that names an operation: the server's
+// tool names and the sub-operations. Sorted, a copy.
+func OperationNames() []string {
+	out := append(append([]string{}, serverToolNames...), subOperationNames...)
+	sort.Strings(out)
+	return out
+}
+
+// SubOperationNames is the part of OperationNames that is not a server tool.
+func SubOperationNames() []string { return append([]string{}, subOperationNames...) }
+
+func namesAnOperation(head string) bool { return operationSet[head] }
 
 type candidateKey struct{ kind, kb, tool, code string }
 
@@ -267,10 +283,12 @@ func NoteContract(tools ToolCaller, tool string) {
 
 // unexpectedCode classifies the error result of a call to tool: an internal
 // error is always a candidate; otherwise the leading `<code>:` token is, when it
-// is shaped like a code, is not a refusal the Surveyor expects and does not name
-// an operation (a tool prefixes its validation and refusal messages with its own
-// name, a batch with its sub-operation's: that is a refusal, not a code). A text with no leading code is not a
-// candidate. Only the code leaves.
+// is shaped like a code, is not a refusal the Surveyor expects and is not the
+// exact name of an operation (a tool prefixes its validation and refusal
+// messages with its own name, a batch with its sub-operation's: that is a
+// refusal, not a code). Any other code is a candidate, including one that merely
+// begins with a domain word (`concept_too_large`). A text with no leading code is
+// not a candidate. Only the code leaves.
 func unexpectedCode(tool, text string) (string, bool) {
 	if strings.HasPrefix(text, client.InternalErrorPrefix) {
 		return internalErrorCode, true

@@ -54,6 +54,12 @@ func TestObserveCalls_RecordsUnexpectedErrorsAsCodesOnly(t *testing.T) {
 		{"a batch prefixing its sub-operation", "concept_move: " + pageText, ""},
 		{"a check prefixing its refusal", "validate: " + pageText, ""},
 		{"a gate prefixing its refusal", "commit_gate: " + pageText, ""},
+		{"a bare tool name", "search: " + pageText, ""},
+		{"a tool of another domain", "work_list: " + pageText, ""},
+		{"a check of the write gate", "write_gate: " + pageText, ""},
+		{"a real code that begins with a domain word", "concept_too_large: " + pageText, "concept_too_large"},
+		{"a policy code that begins with a domain word", "template_unusable: " + pageText, "template_unusable"},
+		{"a near miss of a tool name", "concept_reads: " + pageText, "concept_reads"},
 		{"validation text has no code", "invalid params: " + pageText, ""},
 		{"a sentence", pageText, ""},
 	} {
@@ -78,6 +84,41 @@ func TestObserveCalls_RecordsUnexpectedErrorsAsCodesOnly(t *testing.T) {
 				t.Fatalf("a candidate carries text from the answer: %s", got)
 			}
 		})
+	}
+}
+
+// A tool the list does not know still opens its refusals with its own name: that
+// is the refusal of the tool called, whatever the list says.
+func TestObserveCalls_AToolsOwnNameBeforeAColonIsNoCodeEvenOutsideTheList(t *testing.T) {
+	t.Parallel()
+	if namesAnOperation("plugin_custom_tool") {
+		t.Fatal("the fake tool must be outside the list")
+	}
+	l := NewCandidateLog(nil)
+	ObserveCalls(answerTools{text: "plugin_custom_tool: " + pageText, isError: true}, l, "kb-a").CallTool("plugin_custom_tool", nil)
+	if got := pendingJSON(t, l); got != "[]" {
+		t.Fatalf("recorded %s, want nothing", got)
+	}
+	ObserveCalls(answerTools{text: "plugin_custom_tool: " + pageText, isError: true}, l, "kb-a").CallTool("concept_read", nil)
+	if got := pendingJSON(t, l); !strings.Contains(got, `"code":"plugin_custom_tool"`) {
+		t.Fatalf("another tool's name is a code when it is not an operation: %s", got)
+	}
+}
+
+func TestOperationNames_AreSortedUniqueAndCoverTheSubOperations(t *testing.T) {
+	t.Parallel()
+	names := OperationNames()
+	seen := map[string]bool{}
+	for i, n := range names {
+		if seen[n] || !candidateToolRe.MatchString(n) || (i > 0 && names[i-1] > n) {
+			t.Fatalf("%q: duplicate, unshaped or out of order", n)
+		}
+		seen[n] = true
+	}
+	for _, n := range SubOperationNames() {
+		if !seen[n] {
+			t.Errorf("sub-operation %q is not an operation name", n)
+		}
 	}
 }
 
@@ -228,15 +269,26 @@ func TestBeaterProtocolCandidateArrivesWhenTheBeatIsAcceptedAgain(t *testing.T) 
 	}
 }
 
-// An answer two or more protocols below ours skips the idle signal but not the
-// runs report: the candidate it raises goes in the same beat.
-func TestBeaterServerFarBelowStillPostsItsCandidate(t *testing.T) {
+// An answer two or more protocols below ours skips the idle signal and the runs
+// post (the server applies the same window to that route, and a refusal would arm
+// its back-off): the candidate waits in the log and is delivered with the first
+// runs post after the server is upgraded.
+func TestBeaterServerFarBelowKeepsItsCandidateUntilTheServerIsUpgraded(t *testing.T) {
 	now := time.Now()
 	api := &stubAPI{answer: &client.HeartbeatAnswer{Protocol: 2}}
 	b := newBeater(api, &now)
 	b.Protocol = 5
 	b.Candidates = NewCandidateLog(func() time.Time { return now })
 	b.Beat(context.Background(), State{Run: StateIdle})
+	b.send() // the next interval's beat
+	if len(api.runPosts) != 0 || b.runsSkip != 0 {
+		t.Fatalf("posts = %v, runs back-off = %d: nothing goes to a server behind, and no back-off is armed", api.runPosts, b.runsSkip)
+	}
+	if got, _ := b.Candidates.pending(false); len(got) != 1 || got[0].Code != "server_behind" {
+		t.Fatalf("the candidate must wait in the log: %+v", got)
+	}
+	api.answer = &client.HeartbeatAnswer{Protocol: 5}
+	b.send()
 	if len(api.runPosts) != 1 || api.runPosts[0]["protocol"] != float64(5) {
 		t.Fatalf("posts = %v, want one runs post carrying the candidate", api.runPosts)
 	}

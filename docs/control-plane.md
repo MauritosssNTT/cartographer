@@ -592,7 +592,10 @@ cannot make a run look recent or stale.
 **Report candidates (`report_candidates`, D1925).** The same post may carry what the Surveyor noticed that a
 person would report: an optional array of at most 16 entries `{kind, tool?, code, kb?, count, first_age_seconds,
 last_age_seconds}`. `kind` is one of `componentproto.CandidateKinds`: `tool_error` (a tool answered with an
-internal error, or with an error code the Surveyor does not treat as an expected refusal), `protocol_mismatch` (the
+internal error, or with a leading error code that is not an expected refusal: `refused`, `forbidden`, `not_found`,
+`stale_write`, `conflict`, `oversized`, `read_only*`, or the exact name of a tool or sub-operation, which is how a
+tool prefixes its own refusal; a code that merely begins with a domain word, such as `concept_too_large`, is a
+candidate), `protocol_mismatch` (the
 two sides could not agree on a component protocol) or `contract_mismatch` (a result the Surveyor could not decode as
 the shape it reads). The vocabulary is closed and holds no text: a tool name (`[a-z][a-z0-9_]{0,63}`), a code
 (`[a-z][a-z0-9_]{0,40}`, else `unknown`) and counts, never an error text, an argument or a result body, because a
@@ -607,9 +610,10 @@ many Surveyor ids cannot push another below that share. On a tie the poster pays
 else the tied holder with the oldest last sighting), gone with the declaration and on a restart,
 never written to a KB or to disk. With `feedback.destination: off` the field is accepted and dropped. A refused post
 (4xx) keeps the candidates for the next one, and a heartbeat answer with `runs_wanted` sends all of them again. A
-`protocol_mismatch` against a server that refuses the Surveyor's protocol (`426`) cannot be delivered while the
-refusal lasts, because the runs route refuses that protocol too: the Surveyor keeps it and posts it once the beat is
-accepted again, after either side is upgraded.
+`protocol_mismatch` against a server that refuses the Surveyor's protocol (`426`), or that answers with a protocol
+two or more below its own, cannot be delivered while that lasts, because the runs route applies the same window:
+the Surveyor keeps it and posts it with the first runs post the server accepts, at the first beat after either side
+is upgraded; it does not post to that route meanwhile, so no back-off is armed.
 
 Two read routes serve the Atlas (internal tier, so not on `/api/v1` and not in its OpenAPI document), both `GET`
 so the Atlas stays read-only: `GET /api/ui/v1/feedback/candidates` lists the candidates the caller may see,

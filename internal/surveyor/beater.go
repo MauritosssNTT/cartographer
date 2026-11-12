@@ -70,7 +70,8 @@ type Beater struct {
 	// person would report (feedback.go). Its pending entries ride the runs
 	// report; a protocol the two sides cannot agree on is noted here too.
 	Candidates *CandidateLog
-	// Protocol is the component protocol spoken; componentproto.Protocol when zero.
+	// Protocol is the component protocol spoken; componentproto.Protocol when zero
+	// (a test sets it to reach the branch of a server several protocols behind).
 	Protocol int
 	Now      func() time.Time // time.Now when nil
 	Logf     func(format string, args ...any)
@@ -359,11 +360,10 @@ func (b *Beater) send() {
 			b.Candidates.Note(componentproto.CandidateProtocolMismatch, "", "", "server_behind")
 			b.logf("surveyor: the server speaks component protocol %d, two or more below %d: idle signal unknown", a.Protocol, b.protocol())
 		}
-		// The runs route is a different one: its report, and the candidate just
-		// noted, go to a server that may still take them (a 4xx backs off).
-		if s.Run != StateStopped {
-			b.postRuns(a)
-		}
+		// No runs post here: the server applies the same protocol window to the
+		// runs route, so a post would be refused (426) and arm its back-off. The
+		// candidate stays in the log and rides the first runs post the server
+		// accepts, as the one of a 426 on the heartbeat does.
 		return
 	}
 	b.mu.Lock()
