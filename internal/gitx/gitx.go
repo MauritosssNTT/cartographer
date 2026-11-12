@@ -113,9 +113,12 @@ func netCommand(ctx context.Context, env []string, args ...string) *exec.Cmd {
 // with a process-group kill (the way Fetch is), under netEnv. A deadline hit
 // comes back as a RemoteTimeoutError.
 func runGitNet(dir, remote string, timeout time.Duration, env []string, args ...string) (string, error) {
+	// netEnv first: its own bounded config probe is not network time and must
+	// not eat the budget that bounds the command (#1870).
+	env = netEnv(dir, env)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := netCommand(ctx, netEnv(dir, env), append([]string{"-C", dir}, args...)...)
+	cmd := netCommand(ctx, env, append([]string{"-C", dir}, args...)...)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return string(out), &RemoteTimeoutError{Remote: RedactRemoteURL(remote), After: timeout}
@@ -728,9 +731,10 @@ func LsRemote(dir, remote string, env ...string) (RemoteRefs, error) {
 	if remote == "" {
 		remote = "origin"
 	}
+	env = netEnv(dir, env) // before the deadline: the probe is not network time (#1870)
 	ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
 	defer cancel()
-	cmd := netCommand(ctx, netEnv(dir, env), "-C", dir, "ls-remote", "--symref", remote)
+	cmd := netCommand(ctx, env, "-C", dir, "ls-remote", "--symref", remote)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -1062,10 +1066,11 @@ func fetchWith(dir, remote string, opts, env []string) error {
 	if remote == "" {
 		remote = "origin"
 	}
+	env = netEnv(dir, env) // before the deadline: the probe is not network time (#1870)
 	ctx, cancel := context.WithTimeout(context.Background(), FetchTimeout)
 	defer cancel()
 	args := append([]string{"-C", dir, "fetch"}, opts...)
-	cmd := netCommand(ctx, netEnv(dir, env), append(args, remote)...)
+	cmd := netCommand(ctx, env, append(args, remote)...)
 	out, err := cmd.CombinedOutput()
 	if ctx.Err() == context.DeadlineExceeded {
 		return fmt.Errorf("git fetch %s: %w", RedactRemoteURL(remote), &RemoteTimeoutError{Remote: RedactRemoteURL(remote), After: FetchTimeout})
