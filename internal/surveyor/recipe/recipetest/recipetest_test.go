@@ -169,6 +169,9 @@ func TestEveryCheckFailsOnItsNonConformingRecipe(t *testing.T) {
 		{"entries", func(t *testing.T) Input { // a key twice
 			return starInput(t, feedRecipe(`{"entries": [`+entry+`, `+entry+`], "next_cursor": "c"}`), "feed", scenario())
 		}},
+		{"entries", func(t *testing.T) Input { // no key
+			return starInput(t, feedRecipe(`{"entries": [{"title": "A", "revision": "1", "change": "added"}], "next_cursor": "c"}`), "feed", scenario())
+		}},
 		{"entries", func(t *testing.T) Input { // no revision
 			return starInput(t, feedRecipe(`{"entries": [{"key": "a", "title": "A", "change": "added"}], "next_cursor": "c"}`), "feed", scenario())
 		}},

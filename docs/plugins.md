@@ -322,8 +322,9 @@ the run to that one target; they cannot be given together (exit 2), because nami
 `http.request` is answered from recordings. An exec recipe, and a connector with `transport: stdio`, are the folder's own
 programs, and `plugin test` starts them **as you, with your network and your files, with none of the approval
 `plugin install` asks for**. Before each one starts, the command prints one line on stderr (`running recipe|connector <name> as you,
-unapproved: <command and arguments>`, escaped like the install preview). Test a folder you did not write only after reading
-those commands. An http connector is never reached.
+unapproved: <command and arguments>`, escaped like the install preview), with no prompt. Before you test a folder you did
+not write, read what it runs: the `command` and `args` of each `recipes/<name>/recipe.yaml` and `connectors/<name>.yaml`,
+and the files they name. An http connector is never reached.
 
 The scenario of the recipe or connector `<name>` is `tests/<name>.yaml`, required (a recipe and a connector of one name
 share the file: `steps` are the recipe's, `calls` the connector's). The `tests/` folder is ignored by the tree reader:
@@ -344,7 +345,7 @@ it is neither stored nor part of the digest. Unknown keys are an error.
   live server and is skipped, because a test reaches no network, but its calls are still held to the descriptor's allowlist
   (a call to an unlisted tool needs `expect_error: true`).
 - `http` (Starlark recipes): recorded exchanges `{stage, method, url, query, response: {status, headers, body | body_file}}`.
-  `http.request` is answered from them and from nothing else: it runs every check it runs live (method, https, no
+  `http.request` is answered from them and from nothing else: it runs the checks a live call makes before the network (method, https, no
   credentials in the url, the manifest's `net`, header and size caps, the redirect rules for a recorded 3xx) and then
   answers from the recording instead of resolving or dialing, so a request nobody recorded fails the step naming its
   method and url. A step of `stage: s` sees the exchanges of stage `s` and those with no stage, so a later listing can see
