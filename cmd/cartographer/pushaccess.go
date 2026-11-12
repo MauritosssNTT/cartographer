@@ -58,6 +58,9 @@ const (
 	// host-key failure, an HTTP 429 or 5xx, a connection cut mid-way. Nothing
 	// is known about the credential; Err says what happened.
 	pushUnknown
+	// pushInterrupted: the caller cancelled the probe (Ctrl-C). Not the
+	// deadline, and no finding of any kind.
+	pushInterrupted
 )
 
 type pushResult struct {
@@ -73,6 +76,8 @@ type pushResult struct {
 // allow-list of verdicts is a refusal; every other failure is "could not check".
 func classifyPushError(err error) pushVerdict {
 	switch {
+	case errors.Is(err, context.Canceled):
+		return pushInterrupted
 	case gitx.IsRemoteUnreachable(err):
 		return pushOffline
 	case gitx.IsPushCredentialVerdict(err):
@@ -135,6 +140,9 @@ func pushCause(err error, remote string) string {
 	if errors.Is(err, gitx.ErrProbeTimeout) {
 		return "no answer within the probe's deadline"
 	}
+	if errors.Is(err, context.Canceled) {
+		return "interrupted"
+	}
 	line := firstLine(err)
 	if rest, ok := strings.CutPrefix(line, "git push --dry-run "); ok {
 		if _, after, found := strings.Cut(rest, ": "); found {
@@ -166,6 +174,8 @@ func warnIfCannotPush(name, path, configPath, dataDir string) {
 		fmt.Fprintln(os.Stderr, "  Writes will be committed in the clone and never reach the remote. To write, give the KB a credential with write access (<kb>.token or <kb>.ssh in the server's credentials directory); to only read, ignore this. `cartographer doctor` checks it again.")
 	case pushOffline:
 		fmt.Fprintf(os.Stderr, "Note: push access of %q was not checked, the remote did not answer (%s); `cartographer doctor` checks it later\n", name, res.Cause)
+	case pushInterrupted:
+		fmt.Fprintf(os.Stderr, "Note: push access of %q not checked: interrupted; `cartographer doctor` checks it later\n", name)
 	case pushUnknown:
 		fmt.Fprintf(os.Stderr, "Note: push access of %q could not be checked (%s); `cartographer doctor` checks it again\n", name, res.Cause)
 	}

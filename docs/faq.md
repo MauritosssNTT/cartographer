@@ -64,7 +64,7 @@ simpler and you should use it.
 ## Why does the sync say the remote refused the push, and why is it not retried?
 
 Some refusals are the remote's decision and retrying only repeats them: a token without write access (HTTP 403,
-`Permission to … denied`, a read-only deploy key), a repository rule such as GitHub's `GH013` (required signatures,
+`Permission to … denied`, a read-only deploy key, GitLab's `not allowed to push code to this project`, Gitea's `permission denied for writing`), a repository rule such as GitHub's `GH013` (required signatures,
 pull-request-only branches), a file over the size limit (`GH001`). The KB is `failed` after one attempt and
 `sync_status` quotes the remote's own line with the way out; the change stays committed in the local clone and is
 pushed by the next write once the cause is fixed. `cartographer setup` checks push access with a dry run before it

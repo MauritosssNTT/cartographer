@@ -23,6 +23,11 @@ func TestPermanentPushRejection(t *testing.T) {
 		"signed": {"remote: error: GH013: Repository rule violations found for refs/heads/main.\nremote: - Commits must have verified signatures.\n ! [remote rejected] main -> main (push declined due to repository rule violations)", "the remote requires signed commits: Cartographer does not sign them"},
 		"size":   {"remote: error: GH001: Large files detected. You may want to try Git Large File Storage\nremote: error: File big.bin is 150 MB; this exceeds GitHub's file size limit of 100 MB", "file over the remote's size limit"},
 		"hook":   {" ! [remote rejected] main -> main (hook declined)", "push rules declined the push"},
+		// The forges' read-only refusals, as git prints them.
+		"github deploy key": {"ERROR: The key you are authenticating with has been marked as read only.\nfatal: Could not read from remote repository.", "this credential cannot push"},
+		"gitlab ssh":        {"remote: GitLab: You are not allowed to push code to this project.\nfatal: Could not read from remote repository.", "this credential cannot push"},
+		"gitlab http":       {"remote: You are not allowed to push code to this project.\nfatal: unable to access 'https://gitlab.example.com/org/kb.git/': The requested URL returned error: 403", "this credential cannot push"},
+		"gitea":             {"remote: User permission denied for writing.\nremote: error: hook declined to update refs/heads/main\nTo ssh://git@gitea.example.com/org/kb.git\n ! [remote rejected] main -> main (hook declined)", "this credential cannot push"},
 	} {
 		remedy, ok := PermanentPushRejection(c.out)
 		if !ok || !strings.Contains(remedy, c.want) || !strings.Contains(remedy, "the remote said:") && name != "hook" {
@@ -39,6 +44,7 @@ func TestPermanentPushRejection(t *testing.T) {
 		"unpacker error":       " ! [remote rejected] main -> main (unpacker error)",
 		"bare 403":             "fatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403",
 		"rate limit":           "remote: You have exceeded a secondary rate limit.\nfatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403",
+		"gitlab protected":     "remote: GitLab: You are not allowed to push code to protected branches on this project.",
 		"size warning":         "remote: warning: File notes.bin is 60.00 MB; this is larger than GitHub's recommended maximum file size of 50.00 MB\nremote: warning: GH001: Large files detected. You may want to try Git Large File Storage - https://git-lfs.github.com.",
 		"non-fast-forward":     " ! [rejected]        main -> main (non-fast-forward)",
 		"dns":                  "fatal: unable to access 'https://example.com/kb.git/': Could not resolve host: example.com",
@@ -70,6 +76,29 @@ func TestProbePushAccess_ReadOnlyCredentialIsRefusedAtOnce(t *testing.T) {
 	err := ProbePushAccess(context.Background(), url, env...)
 	if err == nil || !strings.Contains(err.Error(), "this credential cannot push") {
 		t.Fatalf("ProbePushAccess on a read-only remote = %v, want the cannot-push remedy", err)
+	}
+}
+
+// Ctrl-C is not a deadline: a cancelled probe says it was interrupted, which is
+// neither "the remote did not answer" nor a verdict on the credential.
+func TestProbePushAccess_CancelledIsNotADeadline(t *testing.T) {
+	t.Parallel()
+	url, _ := seededHTTPRemote(t)
+	env := append(gitxtest.IsolatedEnv(), gitxtest.TokenEnv(writeToken(t, httpTestToken))...)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := ProbePushAccess(ctx, url, env...)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, ErrProbeTimeout) {
+		t.Fatalf("cancelled probe = %v, want context.Canceled and not ErrProbeTimeout", err)
+	}
+	if IsRemoteUnreachable(err) || IsPushCredentialVerdict(err) {
+		t.Errorf("a cancelled probe is neither unreachable nor a verdict: %v", err)
+	}
+	dctx, dcancel := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer dcancel()
+	<-dctx.Done()
+	if err := ProbePushAccess(dctx, url, env...); !errors.Is(err, ErrProbeTimeout) || errors.Is(err, context.Canceled) {
+		t.Errorf("a probe past its deadline = %v, want ErrProbeTimeout", err)
 	}
 }
 
@@ -274,7 +303,9 @@ func TestIsPushCredentialVerdict(t *testing.T) {
 	for name, out := range map[string]string{
 		"permission":   "remote: Permission to org/kb.git denied to user.\nfatal: unable to access: The requested URL returned error: 403",
 		"write access": "remote: You do not have write access",
-		"deploy key":   "ERROR: the key is a read-only deploy key",
+		"deploy key":   "ERROR: The key you are authenticating with has been marked as read only.",
+		"gitlab":       "remote: You are not allowed to push code to this project.\nfatal: unable to access 'https://gitlab.example.com/org/kb.git/': The requested URL returned error: 403",
+		"gitea":        "remote: User permission denied for writing.",
 		"auth failed":  "fatal: Authentication failed for 'https://example.com/kb.git/'",
 		"401":          "The requested URL returned error: 401",
 		"no login":     "fatal: could not read Username for 'https://example.com': terminal prompts disabled",

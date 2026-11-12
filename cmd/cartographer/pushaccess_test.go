@@ -315,7 +315,11 @@ func TestClassifyPushError(t *testing.T) {
 	}{
 		{"read-only token", head + "this credential cannot push to the remote: use a token or key with write access\nremote: Permission to org/kb.git denied to user.\nfatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403", pushRefused},
 		{"write access", "remote: You do not have write access to this repository", pushRefused},
-		{"read-only deploy key", "ERROR: The key you are authenticating with is a read-only deploy key.", pushRefused},
+		{"github deploy key", "ERROR: The key you are authenticating with has been marked as read only.\nfatal: Could not read from remote repository.", pushRefused},
+		{"gitlab ssh", "remote: GitLab: You are not allowed to push code to this project.\nfatal: Could not read from remote repository.", pushRefused},
+		{"gitlab http", head + "this credential cannot push to the remote: use a token or key with write access\nremote: You are not allowed to push code to this project.\nfatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403", pushRefused},
+		{"gitlab http raw", "remote: You are not allowed to push code to this project.\nfatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403", pushRefused},
+		{"gitea", "remote: User permission denied for writing.\nremote: error: hook declined to update refs/heads/main", pushRefused},
 		{"authentication failed", head + "the credentials were rejected: check the token\nfatal: Authentication failed for 'https://example.com/kb.git/'", pushRefused},
 		{"401", "fatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 401", pushRefused},
 		{"no credential", "fatal: could not read Username for 'https://example.com': terminal prompts disabled", pushRefused},
@@ -328,6 +332,7 @@ func TestClassifyPushError(t *testing.T) {
 		{"reset", "read: Connection reset by peer", pushOffline},
 		{"ssh banner", "kex_exchange_identification: Connection closed by remote host", pushOffline},
 		{"closed", "Connection closed by remote host\nfatal: Could not read from remote repository.", pushOffline},
+		{"interrupted", head + "interrupted: " + context.Canceled.Error(), pushInterrupted},
 		{"deadline", fmt.Sprintf("%v for https://example.com/kb.git: context deadline exceeded", gitx.ErrProbeTimeout), pushOffline},
 
 		{"untrusted tls", head + "the remote's TLS certificate is not trusted by this machine\nfatal: unable to access: SSL certificate problem: self-signed certificate", pushUnknown},
@@ -337,9 +342,13 @@ func TestClassifyPushError(t *testing.T) {
 		{"502 rpc", "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502", pushUnknown},
 		{"bare 403", "fatal: unable to access 'https://example.com/kb.git/': The requested URL returned error: 403", pushUnknown},
 		{"not found", "remote: Repository not found.\nfatal: repository 'https://example.com/kb.git/' not found", pushUnknown},
+		{"gitlab protected", "remote: GitLab: You are not allowed to push code to protected branches on this project.", pushUnknown},
 		{"unrecognised", head + "exit status 128: fatal: something git has never said", pushUnknown},
 	} {
 		var err error = errors.New(tc.out)
+		if tc.name == "interrupted" {
+			err = fmt.Errorf("push probe of https://example.com/kb.git interrupted: %w", context.Canceled)
+		}
 		if tc.name == "deadline" {
 			err = fmt.Errorf("%w for https://example.com/kb.git: context deadline exceeded", gitx.ErrProbeTimeout)
 		}
@@ -403,6 +412,34 @@ func TestProbeKBPush_UnknownIsNotARefusal(t *testing.T) {
 	errOut := withStderr(t, func() { warnIfCannotPush("kb", kb, "", t.TempDir()) })
 	if !strings.Contains(errOut, "Note:") || !strings.Contains(errOut, "could not be checked") || !strings.Contains(errOut, "TLS certificate") || strings.Contains(errOut, "Warning") {
 		t.Errorf("stderr = %q, want a note with the cause and no warning", errOut)
+	}
+}
+
+// Ctrl-C during the probe of `kb clone` is not a deadline: the note says it was
+// interrupted, never "no answer within the probe's deadline".
+func TestWarnIfCannotPush_InterruptedIsNotADeadline(t *testing.T) {
+	if !hasGit() {
+		t.Skip("git not in PATH")
+	}
+	isolateGit(t)
+	kb := filepath.Join(t.TempDir(), "kb")
+	mustRunGit(t, "", "init", "-b", "main", kb)
+	mustRunGit(t, kb, "remote", "add", "origin", "https://example.com/kb.git")
+	orig := probePushAccessFn
+	probePushAccessFn = func(context.Context, string, ...string) error {
+		return fmt.Errorf("push probe of https://example.com/kb.git interrupted: %w", context.Canceled)
+	}
+	t.Cleanup(func() { probePushAccessFn = orig })
+
+	if r := probeKBPush(context.Background(), "kb", kb, ""); r.Verdict != pushInterrupted || r.Cause != "interrupted" {
+		t.Fatalf("result = %+v, want interrupted", r)
+	}
+	errOut := withStderr(t, func() { warnIfCannotPush("kb", kb, "", t.TempDir()) })
+	if !strings.Contains(errOut, "interrupted") || strings.Contains(errOut, "deadline") || strings.Contains(errOut, "Warning") {
+		t.Errorf("stderr = %q, want a note that says interrupted", errOut)
+	}
+	if got := pushFindings([]string{"kb"}, "/data", []pushResult{{Verdict: pushInterrupted, Cause: "interrupted"}}); len(got) != 0 {
+		t.Errorf("an interrupted probe is no finding: %+v", got)
 	}
 }
 

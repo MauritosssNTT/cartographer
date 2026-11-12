@@ -25,8 +25,14 @@ var permanentPushRules = []struct {
 		[]string{"signed commits", "verified signature", "required signature", "signing required"}, false},
 	{"the remote's rules refuse this push: Cartographer pushes straight to the branch, so lift the rule, or set `branch` to one it does not cover",
 		[]string{"gh013", "rule violations", "repository rule"}, false},
+	// The forges' own sentences for a credential that may read and not write:
+	// GitHub's deploy key ("The key you are authenticating with has been marked
+	// as read only."), GitLab ("You are not allowed to push code to this
+	// project."; "...to protected branches..." is another refusal and does not
+	// match) and Gitea ("User permission denied for writing."). No retry heals one.
 	{"this credential cannot push to the remote: use a token or key with write access to the repository",
-		[]string{"write access", "denied to", "key is read-only", "read-only deploy key"}, false},
+		[]string{"write access", "denied to", "marked as read only", "not allowed to push code to this project",
+			"permission denied for writing", "key is read-only", "read-only deploy key"}, false},
 	{"the remote's push rules declined the push and a retry will not change that",
 		[]string{"hook declined"}, false},
 }
@@ -34,7 +40,8 @@ var permanentPushRules = []struct {
 // PermanentPushRejection reports whether the output of a failed push is a
 // refusal that retrying only repeats, and the one-line remedy quoting the
 // remote's own line: a credential without write access ("Permission to X
-// denied", "write access", a read-only deploy key; a bare HTTP 403 is not enough,
+// denied", "write access", a read-only deploy key, GitLab's "not allowed to push
+// code to this project", Gitea's "permission denied for writing"; a bare HTTP 403 is not enough,
 // GitHub's secondary rate limit is one and heals), a repository rule or required
 // signature (GitHub "GH013"), a file over the size limit ("GH001"), a server-side
 // hook that declined. Only policy wording is permanent: a "[remote rejected]" for
@@ -117,7 +124,7 @@ var unreachablePhrases = []string{
 // skips the check on this and does not call the credential refused: the machine
 // may simply be offline.
 func IsRemoteUnreachable(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
 	if errors.Is(err, ErrProbeTimeout) {
@@ -153,7 +160,7 @@ var credentialVerdictPhrases = []string{
 // Username", terminal prompts disabled) counts as a verdict: the server would
 // not push either.
 func IsPushCredentialVerdict(err error) bool {
-	if err == nil || errors.Is(err, ErrProbeTimeout) {
+	if err == nil || errors.Is(err, ErrProbeTimeout) || errors.Is(err, context.Canceled) {
 		return false
 	}
 	text := err.Error()
@@ -179,7 +186,8 @@ const probeRefName = "refs/heads/cartographer-push-probe"
 // key) at once. A rule the remote evaluates only on a real push (required
 // signatures, repository rules) is not seen here; SyncOut reports those on the
 // first push. Failures come back with the permanent-rejection remedy, or
-// remoteRemedy's, or ErrProbeTimeout.
+// remoteRemedy's, or ErrProbeTimeout (the deadline), or context.Canceled (the
+// caller cancelled).
 func ProbePushAccess(ctx context.Context, remote string, env ...string) error {
 	if err := ValidateRemote(remote); err != nil {
 		return err
@@ -209,6 +217,10 @@ func ProbePushAccess(ctx context.Context, remote string, env ...string) error {
 		return nil
 	}
 	shown := RedactRemoteURL(remote)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		// The caller gave up (Ctrl-C): not a deadline, and no verdict of any kind.
+		return fmt.Errorf("push probe of %s interrupted: %w", shown, context.Canceled)
+	}
 	if ctx.Err() != nil {
 		return fmt.Errorf("%w for %s: %v", ErrProbeTimeout, shown, ctx.Err())
 	}
