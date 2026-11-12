@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -194,6 +195,23 @@ func surveyorStartup(ctx context.Context, path string, kinds *surveyor.Kinds, re
 	}
 	for _, p := range cfg.Plugins {
 		fmt.Fprintf(out, "surveyor: plugin %s %s %s\n", p.Manifest.Name, p.Manifest.Version, p.Digest[:12])
+		// The preview cannot know this Surveyor's grant: say here which declared
+		// private-network hosts it opens and which stay refused.
+		if perm := p.Manifest.Components[core.SideSurveyor].Permissions; perm != nil && len(perm.NetPrivate) > 0 {
+			granted := cfg.PluginPins[p.Manifest.Name].AllowPrivateHosts
+			var refused []string
+			for _, h := range perm.NetPrivate {
+				if !slices.Contains(granted, h) {
+					refused = append(refused, h)
+				}
+			}
+			if len(granted) > 0 {
+				fmt.Fprintf(out, "surveyor: plugin %s may reach private-network hosts: %s\n", p.Manifest.Name, strings.Join(granted, ", "))
+			}
+			if len(refused) > 0 {
+				fmt.Fprintf(out, "surveyor: plugin %s private-network hosts not granted by this Surveyor: %s\n", p.Manifest.Name, strings.Join(refused, ", "))
+			}
+		}
 	}
 
 	models := map[string]surveyor.Model{}
