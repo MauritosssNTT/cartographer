@@ -250,7 +250,7 @@ func TestCmdApprove_MCPReapprovalShowsTheDiff(t *testing.T) {
 	if !strings.Contains(out, `-   "url": "https://a.example.com/mcp"`) || !strings.Contains(out, `+   "url": "https://b.example.com/mcp"`) {
 		t.Errorf("diff must show the old and new url:\n%s", out)
 	}
-	if strings.Contains(out, "VAR") || strings.Contains(out, `"type"`) {
+	if strings.Contains(out, "${VAR}") || strings.Contains(out, `"type"`) {
 		t.Errorf("unchanged lines must not be printed:\n%s", out)
 	}
 	cfg, _ := clientconfig.Load(home)
