@@ -11,7 +11,7 @@ only the pages relevant to your task.
 | [faq.md](faq.md) | Questions about concurrent writes, `sync` and how Cartographer compares with an instruction file, Notion or Obsidian |
 | [agent-install.md](agent-install.md) | Command-by-command runbook for an agent to install Cartographer, mount a first KB, connect, and verify |
 | [mcp-clients.md](mcp-clients.md) | Using Meridian from a host with no Cartographer client side (Open WebUI, a gateway, an SDK agent loop): connect, tokens with an `id`, what the model receives, limits |
-| [deployment.md](deployment.md) | Deployment components, deployment scenarios and recipes (native, stdio, single VM, Kubernetes, several servers, the Helm chart), server configuration, health, backup/DR, upgrades, CI/CD and the Surveyor (a third role) |
+| [deployment.md](deployment.md) | Deployment components, deployment scenarios (with the deployment film) and recipes (native, stdio, single VM, Kubernetes, several servers, the Helm chart), server configuration, health, backup/DR, upgrades, CI/CD and the Surveyor (a third role, with the Surveyor-at-work animation) |
 | [surveyor-connectors.md](surveyor-connectors.md) | Writing a Surveyor connector as a plugin: exec, Starlark or MCP, `list` and its cursor, deletes, `fetch`, credentials, testing with `plugin test`, and what a connector cannot do (the KB has no per-concept ACL) |
 | [surveyor-recipes.md](surveyor-recipes.md) | Surveyor exec recipes: the `recipes.<name>` keys, protocol v2 (stdin request with a verb, JSON-lines listing, spec and check), failures, trust model, example script |
 | [configurator.md](configurator.md) | Compass (the multi-provider client) and service subcommands (`cartographer setup/agents/connect/disconnect/reconnect/status/sync/call/doctor/update/kb/service/…`): flags, generated files per provider, `.cartographer.yaml`, lockfile v2, installation |
@@ -20,7 +20,7 @@ only the pages relevant to your task.
 | [skills-services-secrets.md](skills-services-secrets.md) | Skill packaging (`SKILL.md`), `type: Service` descriptors, SOPS secrets |
 | [sync.md](sync.md) | Client ↔ server provisioning sync: manifest+revision, lockfile, drift detection, layered triggers, prune, path-portability placeholders |
 | [hooks.md](hooks.md) | The hook protocol: HTTP webhooks at four points of the core (write veto, audit sink, secret resolver, identity), versioning, failure policy and breaker, request and response of each point with examples, and the JSON Schemas in `docs/schemas/hooks/` |
-| [plugins.md](plugins.md) | Plugins: a git repository or folder that adds clients, skills, subagents, hooks, commands and MCP tools; manifest, approval per version, the Starlark script model and its permissions, a worked example |
+| [plugins.md](plugins.md) | Plugins: a git repository or folder that adds clients, skills, subagents, hooks, commands and MCP tools; manifest, approval per version, the Starlark script model and its permissions, a worked example; the plugins film is at the top |
 | [use-cases.md](use-cases.md) | Executable patterns for runbooks, imports, source ingest, KB conformance, provider sharing and multi-KB separation |
 
 ## Internals & contributing
@@ -58,6 +58,11 @@ Mutable state does not live in narrative documentation:
 | Add a skill or external service | `skills-services-secrets.md` |
 | Deploy / production operations | `deployment.md` |
 | Choose how to deploy | `deployment.md` §Components and §Deployment scenarios; Compass in `configurator.md` §Headless hosts, CI and agent containers |
+| Deploy only what you need (a laptop, a team VM, a cluster, a lone Compass) | `deployment.md` §Components → §Deployment scenarios (the deployment film is at the top of the scenarios) |
+| What is Meridian (the server) | `overview.md` §Runtime shapes → `deployment.md` §Components → `cartographer serve`; `control-plane.md` for its tools |
+| What is Compass (the client) | `overview.md` §Runtime shapes → `configurator.md` → `cartographer connect` |
+| What is Atlas (the browser UI) | `deployment.md` §The embedded Atlas UI → open `/ui/` on a running Meridian (`cartographer serve`, then the URL it prints) |
+| What is the Surveyor (the maintenance agent) | `deployment.md` §The Surveyor → `surveyor-recipes.md` → `cartographer surveyor --config <file>` |
 | Understand an architectural choice | `decisions.md` for the generated list, or `ls docs/decisions/D<n>-*` if you already have the number |
 | Connect a host with no Cartographer client side (Open WebUI, a gateway, an SDK agent loop) | `mcp-clients.md` |
 | Configure an LLM provider | `interoperability.md` |
@@ -99,7 +104,7 @@ page that was not touched; the table and the file change together, and a test
 | A new user-visible name of a component, or a sentence that names one | The four components are Meridian (the server), Surveyor, Atlas and Compass (the client), always in that order: say Meridian or Compass when the sentence names the component, and keep "MCP server", third-party servers, agent clients and MCP/HTTP clients, command names, config keys, images and routes as they are. A new name goes in `deployment.md` §Components, the Atlas labels, the CLI help and the Helm chart in the same change (D1867) |
 | New external dependency | A decision file under `docs/decisions/` + `conventions.md` §dependencies |
 | New test level or pre-release checklist change | `testing.md` |
-| Which CI jobs a PR runs (`web`, `windows`, `demo-edge` path filters) | the table in `scripts/ci-filters.sh` and its test `internal/repodocs/ci_filters_test.go` (D994), then `testing.md` §Go tests; never regex inline in `ci.yml` |
+| Which CI jobs a PR runs (the `web`, `forge` and `helm` path filters; `windows` and `demo` are no longer read by a job, D1592) | the table in `scripts/ci-filters.sh` and its test `internal/repodocs/ci_filters_test.go` (D994), then `testing.md` §Go tests; never regex inline in `ci.yml` |
 | The read tools, or `demo/astronomy` | They reach the live MCP demo (`deploy/demo/`, `deployment.md` §The hosted MCP demo) at the next release, when `demo.yml` rebuilds it; nothing to update by hand (D751) |
 | `deploy/helm/**`, `test/helm/` or `scripts/install-helm.sh` (the Helm chart) | `deploy/helm/cartographer/README.md` (what `helm show readme` prints), `deployment.md` §Example: K8s pod and the Surveyor sections, `testing.md` §Helm chart, `make helm-check`, the `helm` filter in `scripts/ci-filters.sh`; the chart's version and image tag are stamped by the release workflows, never by hand (D1441) |
 | `demo/guestbook/`, `deploy/demo/worker.js` (moderation) or the demo's Terraform | The seed reaches the live guestbook only through its private remote, the Worker and infrastructure only through a maintainer `terraform apply`; `deploy/demo/README.md`, `deployment.md` §The hosted MCP demo, `make demo-worker-test`, `make demo-smoke` (D800) |
