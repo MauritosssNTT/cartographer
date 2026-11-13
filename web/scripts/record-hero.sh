@@ -22,7 +22,7 @@
 #                 environment, and PID=<n> for each process to stop at the end
 #                 (web/scripts/demo-surveyor.mjs)
 #   HERO_MAX_BYTES  fail when the encoded WebP is larger (default: no cap; the film
-#                 pipeline's cap, decision 4 of D-new-readme-videos, is set by the caller)
+#                 pipeline's cap, D-new-readme-videos, is set by the caller)
 # Needs Node, ffmpeg, img2webp (brew install ffmpeg webp / apt install ffmpeg
 # webp) and `npx playwright install chromium`.
 
